@@ -63,3 +63,12 @@ export async function loadPlaylists(): Promise<void> {
 export async function refreshAll(): Promise<void> {
     await Promise.all([loadLibrary(), loadPlaylists()]);
 }
+
+// Clear library data (for cache clearing)
+export async function clearLibrary(): Promise<void> {
+    tracks.set([]);
+    albums.set([]);
+    artists.set([]);
+    playlists.set([]);
+    lastError.set(null);
+}

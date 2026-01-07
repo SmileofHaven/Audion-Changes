@@ -60,6 +60,7 @@ export async function fetchLyricsForTrack(): Promise<void> {
         // Try to load from local cache first (via Tauri)
         const cached = await loadLrcFromCache(track.path);
         if (cached && fetchId === currentFetchId) {
+            console.log('[LyricsStore] 📂 Loaded from cache:', cached);
             const lines = lyricsManager.parseLRC(cached);
             lyricsData.set({
                 lines,
@@ -150,3 +151,36 @@ export function destroyLyricsSync(): void {
         unsubscribe = null;
     }
 }
+
+// Delete LRC file for a specific music file
+async function deleteLrcFromCache(musicPath: string): Promise<boolean> {
+    try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const deleted = await invoke<boolean>('delete_lrc_file', { musicPath });
+        if (deleted) {
+            console.log('[LyricsStore] Deleted LRC from cache');
+        }
+        return deleted;
+    } catch (error) {
+        console.log('[LyricsStore] Failed to delete LRC:', error);
+        return false;
+    }
+}
+
+// Lyrics store object for external access
+export const lyricsStore = {
+    clearLyrics(): void {
+        lyricsData.set(null);
+        lyricsError.set(null);
+        lyricsLoading.set(false);
+    },
+    
+    async clearCurrentTrackCache(): Promise<void> {
+        const track = get(currentTrack);
+        if (track) {
+            await deleteLrcFromCache(track.path);
+            lyricsData.set(null);
+            lyricsError.set(null);
+        }
+    }
+};

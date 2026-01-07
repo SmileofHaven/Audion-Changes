@@ -390,12 +390,18 @@
     }
 
     .album-art {
-        width: 56px;
-        height: 56px;
-        border-radius: var(--radius-sm);
+        width: 64px;
+        height: 64px;
+        border-radius: var(--radius-md);
         overflow: hidden;
         flex-shrink: 0;
         background-color: var(--bg-surface);
+        transition: transform var(--transition-fast);
+        cursor: pointer;
+    }
+
+    .album-art:hover {
+        transform: scale(1.05);
     }
 
     .album-art img {
@@ -471,7 +477,35 @@
     }
 
     .play-btn:hover {
-        transform: scale(1.06);
+        transform: scale(1.08);
+        background-color: var(--accent-hover);
+    }
+
+    .icon-btn {
+        position: relative;
+    }
+
+    .icon-btn::after {
+        content: attr(title);
+        position: absolute;
+        bottom: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 4px 8px;
+        background-color: var(--bg-surface);
+        color: var(--text-primary);
+        font-size: 0.75rem;
+        border-radius: var(--radius-sm);
+        white-space: nowrap;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity var(--transition-fast);
+        margin-bottom: 8px;
+        box-shadow: var(--shadow-md);
+    }
+
+    .icon-btn:hover::after {
+        opacity: 1;
     }
 
     .repeat-one {
@@ -532,19 +566,18 @@
     .progress-thumb,
     .volume-thumb {
         position: absolute;
-        width: 12px;
-        height: 12px;
+        width: 14px;
+        height: 14px;
         background-color: var(--text-primary);
         border-radius: var(--radius-full);
-        transform: translateX(-50%);
-        opacity: 0;
-        transition: opacity var(--transition-fast);
-        box-shadow: var(--shadow-sm);
+        transform: translateX(-50%) scale(0);
+        transition: transform var(--transition-fast);
+        box-shadow: var(--shadow-md);
     }
 
     .progress-bar:hover .progress-thumb,
     .volume-bar:hover .volume-thumb {
-        opacity: 1;
+        transform: translateX(-50%) scale(1);
     }
 
     /* Volume controls */

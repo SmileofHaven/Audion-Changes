@@ -1,12 +1,12 @@
 /**
  * Musixmatch LRC provider
  * For fetching synced and word-by-word lyrics
+ * Uses Tauri backend to avoid CORS issues
  */
 
-import { MUSIXMATCH_API } from './constants';
+import { invoke } from '@tauri-apps/api/core';
 
 export class Musixmatch {
-    private ROOT_URL = MUSIXMATCH_API.ROOT_URL;
     private lang: string | null;
     private enhanced: boolean;
     private token: string | null = null;
@@ -18,26 +18,24 @@ export class Musixmatch {
         this.enhanced = enhanced;
     }
 
-    private async _get(action: string, query: [string, string][] = []): Promise<Response> {
+    private async _get(action: string, query: [string, string][] = []): Promise<any> {
         if (action !== "token.get" && this.token === null) {
             await this._getToken();
         }
 
-        const params = new URLSearchParams();
-        for (const [key, value] of query) {
-            params.append(key, value);
-        }
-        params.append("app_id", "web-desktop-app-v1.0");
-
+        const params: [string, string][] = [...query];
+        
         if (this.token !== null) {
-            params.append("usertoken", this.token);
+            params.push(["usertoken", this.token]);
         }
 
-        const t = String(Date.now());
-        params.append("t", t);
-
-        const url = `${this.ROOT_URL}${action}?${params.toString()}`;
-        return await fetch(url);
+        // Use Tauri backend to make the request (avoids CORS)
+        const responseText = await invoke<string>('musixmatch_request', {
+            action,
+            params
+        });
+        
+        return JSON.parse(responseText);
     }
 
     private async _getToken(): Promise<void> {
@@ -56,8 +54,7 @@ export class Musixmatch {
         }
 
         console.log('[Musixmatch] Fetching new token...');
-        const response = await this._get("token.get", [["user_language", "en"]]);
-        const data = await response.json();
+        const data = await this._get("token.get", [["user_language", "en"]]);
 
         if (data.message.header.status_code === 401) {
             console.log('[Musixmatch] Token request got 401');
@@ -105,64 +102,59 @@ export class Musixmatch {
     }
 
     async getLrcById(trackId: string, retryOnAuth = true): Promise<{ synced: string } | null> {
-        const response = await this._get("track.subtitle.get", [
-            ["track_id", trackId],
-            ["subtitle_format", "lrc"]
-        ]);
+        try {
+            const data = await this._get("track.subtitle.get", [
+                ["track_id", trackId],
+                ["subtitle_format", "lrc"]
+            ]);
 
-        if (!response.ok) {
-            return null;
-        }
-
-        const data = await response.json();
-
-        if (data.message.header.status_code === 401) {
-            this.clearToken();
-            if (retryOnAuth) {
-                return this.getLrcById(trackId, false);
+            if (data.message.header.status_code === 401) {
+                this.clearToken();
+                if (retryOnAuth) {
+                    return this.getLrcById(trackId, false);
+                }
+                return null;
             }
+
+            const body = data.message.body;
+            if (!body || !body.subtitle || !body.subtitle.subtitle_body) {
+                return null;
+            }
+
+            return { synced: body.subtitle.subtitle_body };
+        } catch (error) {
+            console.log('[Musixmatch] Error getting LRC by ID:', error);
             return null;
         }
-
-        const body = data.message.body;
-        if (!body || !body.subtitle || !body.subtitle.subtitle_body) {
-            return null;
-        }
-
-        return { synced: body.subtitle.subtitle_body };
     }
 
     async getLrcWordByWord(trackId: string, retryOnAuth = true): Promise<{ synced: string | null }> {
         try {
-            const response = await this._get("track.richsync.get", [["track_id", trackId]]);
+            const data = await this._get("track.richsync.get", [["track_id", trackId]]);
 
-            if (response.ok) {
-                const data = await response.json();
+            if (data.message.header.status_code === 401) {
+                this.clearToken();
+                if (retryOnAuth) {
+                    return this.getLrcWordByWord(trackId, false);
+                }
+                return { synced: null };
+            }
 
-                if (data.message.header.status_code === 401) {
-                    this.clearToken();
-                    if (retryOnAuth) {
-                        return this.getLrcWordByWord(trackId, false);
+            if (data.message.header.status_code === 200 &&
+                data.message.body?.richsync?.richsync_body) {
+                const lrcRaw = JSON.parse(data.message.body.richsync.richsync_body);
+                let lrcStr = "";
+
+                for (const item of lrcRaw) {
+                    lrcStr += `[${this.formatTime(item.ts)}] `;
+                    for (const l of item.l) {
+                        const t = this.formatTime(parseFloat(item.ts) + parseFloat(l.o));
+                        lrcStr += `<${t}> ${l.c} `;
                     }
-                    return { synced: null };
+                    lrcStr += "\n";
                 }
 
-                if (data.message.header.status_code === 200 &&
-                    data.message.body?.richsync?.richsync_body) {
-                    const lrcRaw = JSON.parse(data.message.body.richsync.richsync_body);
-                    let lrcStr = "";
-
-                    for (const item of lrcRaw) {
-                        lrcStr += `[${this.formatTime(item.ts)}] `;
-                        for (const l of item.l) {
-                            const t = this.formatTime(parseFloat(item.ts) + parseFloat(l.o));
-                            lrcStr += `<${t}> ${l.c} `;
-                        }
-                        lrcStr += "\n";
-                    }
-
-                    return { synced: lrcStr };
-                }
+                return { synced: lrcStr };
             }
         } catch (error) {
             console.log('[Musixmatch] Error getting word-by-word lyrics:', error);
@@ -173,44 +165,48 @@ export class Musixmatch {
     async getLrc(searchTerm: string, retryOnAuth = true): Promise<{ synced: string } | null> {
         console.log(`[Musixmatch] Searching for: "${searchTerm}"`);
 
-        const response = await this._get("track.search", [
-            ["q", searchTerm],
-            ["page_size", "5"],
-            ["page", "1"]
-        ]);
+        try {
+            const data = await this._get("track.search", [
+                ["q", searchTerm],
+                ["page_size", "5"],
+                ["page", "1"]
+            ]);
 
-        const data = await response.json();
-        const statusCode = data.message.header.status_code;
+            const statusCode = data.message.header.status_code;
 
-        if (statusCode === 401) {
-            this.clearToken();
-            if (retryOnAuth) {
-                return this.getLrc(searchTerm, false);
+            if (statusCode === 401) {
+                this.clearToken();
+                if (retryOnAuth) {
+                    return this.getLrc(searchTerm, false);
+                }
+                return null;
             }
-            return null;
-        }
 
-        if (statusCode !== 200) {
-            return null;
-        }
-
-        const tracks = data.message.body?.track_list;
-        if (!tracks || tracks.length === 0) {
-            return null;
-        }
-
-        // Take first result
-        const track = tracks[0];
-        const trackId = track.track.track_id;
-        console.log(`[Musixmatch] Found: "${track.track.track_name}" by "${track.track.artist_name}"`);
-
-        if (this.enhanced) {
-            const lrc = await this.getLrcWordByWord(trackId);
-            if (lrc && lrc.synced) {
-                return { synced: lrc.synced };
+            if (statusCode !== 200) {
+                return null;
             }
-        }
 
-        return this.getLrcById(trackId);
+            const tracks = data.message.body?.track_list;
+            if (!tracks || tracks.length === 0) {
+                return null;
+            }
+
+            // Take first result
+            const track = tracks[0];
+            const trackId = String(track.track.track_id);
+            console.log(`[Musixmatch] Found: "${track.track.track_name}" by "${track.track.artist_name}"`);
+
+            if (this.enhanced) {
+                const lrc = await this.getLrcWordByWord(trackId);
+                if (lrc && lrc.synced) {
+                    return { synced: lrc.synced };
+                }
+            }
+
+            return this.getLrcById(trackId);
+        } catch (error) {
+            console.log('[Musixmatch] Error searching for lyrics:', error);
+            return null;
+        }
     }
 }

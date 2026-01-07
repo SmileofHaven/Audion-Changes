@@ -13,8 +13,24 @@ export const isPlaying = writable(false);
 export const queue = writable<Track[]>([]);
 export const queueIndex = writable(0);
 
-// Volume (0-1)
-export const volume = writable(1);
+// Volume (0-1) - this is the SLIDER value (linear)
+// We use a logarithmic curve for actual audio output
+export const volume = writable(0.7);
+
+// Convert linear slider value (0-1) to logarithmic audio volume (0-1)
+// Human hearing is logarithmic, so linear sliders feel wrong
+// Using: audioVolume = sliderValue^2 (quadratic approximation of log curve)
+// This makes the slider feel more natural
+export function sliderToAudioVolume(sliderValue: number): number {
+    // Quadratic curve: softer at low end, more range at high end
+    // Alternative: Math.pow(sliderValue, 2.5) for steeper curve
+    return Math.pow(sliderValue, 2);
+}
+
+// Convert audio volume back to slider value (for display if needed)
+export function audioVolumeToSlider(audioVolume: number): number {
+    return Math.sqrt(audioVolume);
+}
 
 // Current time and duration
 export const currentTime = writable(0);
@@ -26,24 +42,56 @@ export const repeat = writable<'none' | 'one' | 'all'>('none');
 
 // Audio element reference (set from PlayerBar component)
 let audioElement: HTMLAudioElement | null = null;
+let animationFrameId: number | null = null;
+
+// High-frequency time update using requestAnimationFrame for smooth lyrics
+function startTimeSync(): void {
+    if (animationFrameId !== null) return;
+    
+    const updateTime = () => {
+        if (audioElement && !audioElement.paused) {
+            currentTime.set(audioElement.currentTime);
+            animationFrameId = requestAnimationFrame(updateTime);
+        } else {
+            animationFrameId = null;
+        }
+    };
+    animationFrameId = requestAnimationFrame(updateTime);
+}
+
+function stopTimeSync(): void {
+    if (animationFrameId !== null) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = null;
+    }
+}
 
 export function setAudioElement(element: HTMLAudioElement): void {
     audioElement = element;
 
-    // Sync volume
-    const vol = get(volume);
-    audioElement.volume = vol;
+    // Sync volume (convert linear slider to logarithmic audio volume)
+    const sliderVol = get(volume);
+    audioElement.volume = sliderToAudioVolume(sliderVol);
 
     // Set up event listeners
     audioElement.addEventListener('ended', handleTrackEnd);
     audioElement.addEventListener('timeupdate', () => {
-        currentTime.set(audioElement?.currentTime ?? 0);
+        // Fallback update (less frequent, for when RAF isn't running)
+        if (animationFrameId === null) {
+            currentTime.set(audioElement?.currentTime ?? 0);
+        }
     });
     audioElement.addEventListener('durationchange', () => {
         duration.set(audioElement?.duration ?? 0);
     });
-    audioElement.addEventListener('play', () => isPlaying.set(true));
-    audioElement.addEventListener('pause', () => isPlaying.set(false));
+    audioElement.addEventListener('play', () => {
+        isPlaying.set(true);
+        startTimeSync();
+    });
+    audioElement.addEventListener('pause', () => {
+        isPlaying.set(false);
+        stopTimeSync();
+    });
 }
 
 // Play a specific track
@@ -153,11 +201,12 @@ export function seek(position: number): void {
     }
 }
 
-// Set volume (0-1)
-export function setVolume(vol: number): void {
-    volume.set(vol);
+// Set volume (slider value 0-1, will be converted to logarithmic for audio)
+export function setVolume(sliderValue: number): void {
+    volume.set(sliderValue);
     if (audioElement) {
-        audioElement.volume = vol;
+        // Apply logarithmic curve for natural-feeling volume
+        audioElement.volume = sliderToAudioVolume(sliderValue);
     }
 }
 

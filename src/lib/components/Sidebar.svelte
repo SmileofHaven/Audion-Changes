@@ -17,6 +17,7 @@
     } from "$lib/stores/view";
     import { selectMusicFolder, scanMusic } from "$lib/api/tauri";
     import { loadLibrary } from "$lib/stores/library";
+    import MenuBar from "./MenuBar.svelte";
 
     let isScanning = false;
     let scanError: string | null = null;
@@ -62,6 +63,7 @@
 
 <aside class="sidebar">
     <div class="sidebar-header">
+        <MenuBar />
         <div class="logo">
             <svg viewBox="0 0 24 24" fill="currentColor" width="32" height="32">
                 <path
@@ -251,6 +253,9 @@
     .sidebar-header {
         padding: var(--spacing-md);
         padding-top: var(--spacing-lg);
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-sm);
     }
 
     .logo {
@@ -273,7 +278,7 @@
     }
 
     .nav-section {
-        margin-bottom: var(--spacing-lg);
+        margin-bottom: var(--spacing-xl);
     }
 
     .nav-section-header {
@@ -283,13 +288,13 @@
     }
 
     .nav-section-title {
-        font-size: 0.75rem;
-        font-weight: 600;
+        font-size: 0.6875rem;
+        font-weight: 700;
         text-transform: uppercase;
-        letter-spacing: 0.1em;
+        letter-spacing: 0.12em;
         color: var(--text-subdued);
-        margin-bottom: var(--spacing-sm);
-        padding-left: var(--spacing-sm);
+        margin-bottom: var(--spacing-md);
+        padding-left: var(--spacing-md);
     }
 
     .nav-list {
@@ -302,23 +307,25 @@
     .nav-item {
         display: flex;
         align-items: center;
-        gap: var(--spacing-sm);
+        gap: var(--spacing-md);
         width: 100%;
-        padding: var(--spacing-sm) var(--spacing-sm);
-        border-radius: var(--radius-sm);
+        padding: 12px var(--spacing-md);
+        border-radius: var(--radius-md);
         color: var(--text-secondary);
         transition: all var(--transition-fast);
         text-align: left;
+        font-size: 0.9375rem;
     }
 
     .nav-item:hover {
         color: var(--text-primary);
-        background-color: var(--bg-highlight);
+        background-color: rgba(255, 255, 255, 0.1);
     }
 
     .nav-item.active {
         color: var(--text-primary);
         background-color: var(--bg-surface);
+        font-weight: 500;
     }
 
     .nav-item svg {

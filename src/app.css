@@ -21,7 +21,7 @@
   
   /* Sizing */
   --sidebar-width: 280px;
-  --player-height: 90px;
+  --player-height: 96px;
   --header-height: 64px;
   
   /* Spacing */
@@ -96,6 +96,11 @@ html, body {
 :focus-visible {
   outline: 2px solid var(--accent-primary);
   outline-offset: 2px;
+  transition: outline-offset var(--transition-fast);
+}
+
+:focus-visible:hover {
+  outline-offset: 4px;
 }
 
 /* Button base styles */
@@ -161,8 +166,8 @@ a:hover {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   border-radius: var(--radius-full);
   color: var(--text-secondary);
   transition: all var(--transition-fast);
@@ -170,7 +175,12 @@ a:hover {
 
 .icon-btn:hover {
   color: var(--text-primary);
-  background-color: var(--bg-highlight);
+  background-color: rgba(255, 255, 255, 0.1);
+  transform: scale(1.1);
+}
+
+.icon-btn:active {
+  transform: scale(0.95);
 }
 
 .icon-btn.active {
@@ -221,11 +231,13 @@ a:hover {
   background-color: var(--bg-elevated);
   border-radius: var(--radius-md);
   padding: var(--spacing-md);
-  transition: background-color var(--transition-normal);
+  transition: all var(--transition-normal);
 }
 
 .card:hover {
   background-color: var(--bg-surface);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
 }
 
 /* Animations */

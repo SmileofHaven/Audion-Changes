@@ -1,12 +1,22 @@
 <script lang="ts">
     import type { Track } from "$lib/api/tauri";
-    import { formatDuration } from "$lib/api/tauri";
+    import { formatDuration, getAlbumArtSrc } from "$lib/api/tauri";
     import { playTracks, currentTrack, isPlaying } from "$lib/stores/player";
     import { contextMenu } from "$lib/stores/ui";
+    import { albums } from "$lib/stores/library";
 
     export let tracks: Track[] = [];
     export let title: string = "Tracks";
     export let showAlbum: boolean = true;
+
+    // Create a map of album_id to album for quick lookup
+    $: albumMap = new Map($albums.map(a => [a.id, a]));
+
+    function getTrackAlbumArt(track: Track): string | null {
+        if (!track.album_id) return null;
+        const album = albumMap.get(track.album_id);
+        return album ? getAlbumArtSrc(album.art_data) : null;
+    }
 
     function handleTrackClick(index: number) {
         playTracks(tracks, index);
@@ -37,15 +47,12 @@
             ],
         });
     }
-
-    function isCurrentTrack(track: Track): boolean {
-        return $currentTrack?.id === track.id;
-    }
 </script>
 
 <div class="track-list">
     <header class="list-header">
         <span class="col-num">#</span>
+        <span class="col-cover"></span>
         <span class="col-title">Title</span>
         {#if showAlbum}
             <span class="col-album">Album</span>
@@ -61,15 +68,16 @@
 
     <div class="list-body">
         {#each tracks as track, index}
+            {@const albumArt = getTrackAlbumArt(track)}
             <button
                 class="track-row"
-                class:playing={isCurrentTrack(track)}
+                class:playing={$currentTrack?.id === track.id}
                 on:click={() => handleTrackClick(index)}
                 on:dblclick={() => handleTrackDoubleClick(index)}
                 on:contextmenu={(e) => handleContextMenu(e, index)}
             >
                 <span class="col-num">
-                    {#if isCurrentTrack(track) && $isPlaying}
+                    {#if $currentTrack?.id === track.id && $isPlaying}
                         <svg
                             class="playing-icon"
                             viewBox="0 0 24 24"
@@ -84,6 +92,28 @@
                     {:else}
                         {index + 1}
                     {/if}
+                </span>
+                <span class="col-cover">
+                    <div class="cover-wrapper">
+                        {#if albumArt}
+                            <img
+                                src={albumArt}
+                                alt="Album cover"
+                                class="cover-image"
+                            />
+                        {:else}
+                            <div class="cover-placeholder">
+                                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+                                    <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" />
+                                </svg>
+                            </div>
+                        {/if}
+                        <div class="cover-play-overlay">
+                            <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18">
+                                <path d="M8 5v14l11-7z" />
+                            </svg>
+                        </div>
+                    </div>
                 </span>
                 <span class="col-title">
                     <div class="title-row">
@@ -146,9 +176,10 @@
 
     .list-header {
         display: grid;
-        grid-template-columns: 48px 1fr 1fr 80px;
+        grid-template-columns: 40px 48px 1fr 1fr 80px;
         gap: var(--spacing-md);
         padding: var(--spacing-sm) var(--spacing-md);
+        padding-left: var(--spacing-lg);
         border-bottom: 1px solid var(--border-color);
         font-size: 0.75rem;
         font-weight: 500;
@@ -162,7 +193,7 @@
     }
 
     .list-header.no-album {
-        grid-template-columns: 48px 1fr 80px;
+        grid-template-columns: 40px 48px 1fr 80px;
     }
 
     .list-body {
@@ -172,18 +203,20 @@
 
     .track-row {
         display: grid;
-        grid-template-columns: 48px 1fr 1fr 80px;
+        grid-template-columns: 40px 48px 1fr 1fr 80px;
         gap: var(--spacing-md);
         padding: var(--spacing-sm) var(--spacing-md);
+        padding-left: var(--spacing-lg);
         align-items: center;
-        border-radius: var(--radius-sm);
-        transition: background-color var(--transition-fast);
+        border-radius: var(--radius-md);
+        transition: all var(--transition-fast);
         width: 100%;
         text-align: left;
+        min-height: 56px;
     }
 
     .track-row:hover {
-        background-color: var(--bg-highlight);
+        background-color: rgba(255, 255, 255, 0.1);
     }
 
     .track-row.playing {
@@ -202,6 +235,57 @@
 
     .track-row:hover .col-num:not(:has(.playing-icon)) {
         color: var(--text-primary);
+    }
+
+    .col-cover {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .cover-image {
+        width: 40px;
+        height: 40px;
+        border-radius: var(--radius-sm);
+        object-fit: cover;
+    }
+
+    .cover-placeholder {
+        width: 40px;
+        height: 40px;
+        border-radius: var(--radius-sm);
+        background-color: var(--bg-highlight);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--text-subdued);
+    }
+
+    .cover-wrapper {
+        position: relative;
+        width: 40px;
+        height: 40px;
+    }
+
+    .cover-play-overlay {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background-color: rgba(0, 0, 0, 0.6);
+        border-radius: var(--radius-sm);
+        opacity: 0;
+        transition: opacity var(--transition-fast);
+        color: var(--text-primary);
+    }
+
+    .track-row:hover .cover-play-overlay {
+        opacity: 1;
+    }
+
+    .track-row.playing .cover-play-overlay {
+        opacity: 0;
     }
 
     .playing-icon {
@@ -242,19 +326,25 @@
     .quality-tag {
         font-size: 0.6rem;
         font-weight: 700;
-        padding: 1px 4px;
+        padding: 2px 6px;
         border-radius: var(--radius-sm);
         background-color: var(--bg-highlight);
         color: var(--text-secondary);
         border: 1px solid var(--border-color);
         white-space: nowrap;
         flex-shrink: 0;
+        opacity: 0.7;
+        transition: opacity var(--transition-fast);
+    }
+
+    .track-row:hover .quality-tag {
+        opacity: 1;
     }
 
     .quality-tag.high-quality {
         color: var(--accent-primary);
         border-color: var(--accent-primary);
-        background-color: rgba(29, 185, 84, 0.1);
+        background-color: rgba(29, 185, 84, 0.15);
     }
 
     .track-artist {

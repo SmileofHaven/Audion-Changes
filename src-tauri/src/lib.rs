@@ -51,6 +51,8 @@ pub fn run() {
             // Lyrics commands
             commands::save_lrc_file,
             commands::load_lrc_file,
+            commands::delete_lrc_file,
+            commands::musixmatch_request,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

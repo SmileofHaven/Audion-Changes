@@ -34,6 +34,9 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 # Base64 encoding for album art
 base64 = "0.22"
 
+# HTTP client for API requests
+reqwest = { version = "0.12", features = ["json", "cookies"] }
+
 # Error handling
 thiserror = "1"
 

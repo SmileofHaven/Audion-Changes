@@ -1,5 +1,6 @@
 <script lang="ts">
     import { fade, fly } from "svelte/transition";
+    import { derived } from "svelte/store";
     import { isFullScreen, toggleFullScreen } from "$lib/stores/ui";
     import {
         currentTrack,
@@ -18,6 +19,64 @@
 
     let albumArt: string | null = null;
     let lyricsContainer: HTMLDivElement;
+
+    // Combined reactive state for word-by-word sync
+    const wordSyncState = derived(
+        [lyricsData, currentTime, activeLine],
+        ([$lyrics, $time, $activeLineIdx]) => {
+            if (!$lyrics || $activeLineIdx < 0) {
+                return { activeWordIdx: -1, progress: 0 };
+            }
+            
+            const line = $lyrics.lines[$activeLineIdx];
+            if (!line?.words || line.words.length === 0) {
+                return { activeWordIdx: -1, progress: 0 };
+            }
+            
+            // Find the word that's currently active
+            let activeWordIdx = -1;
+            for (let i = 0; i < line.words.length; i++) {
+                const word = line.words[i];
+                if ($time >= word.time && $time <= word.endTime) {
+                    activeWordIdx = i;
+                    break;
+                }
+                if ($time >= word.time) {
+                    const nextWord = line.words[i + 1];
+                    if (!nextWord || $time < nextWord.time) {
+                        activeWordIdx = i;
+                    }
+                }
+            }
+            
+            // Calculate progress for active word
+            let progress = 0;
+            if (activeWordIdx >= 0) {
+                const word = line.words[activeWordIdx];
+                const wordStart = word.time;
+                const wordEnd = word.endTime;
+                const duration = wordEnd - wordStart;
+                
+                if (duration > 0) {
+                    const elapsed = $time - wordStart;
+                    progress = Math.min(100, Math.max(0, (elapsed / duration) * 100));
+                } else {
+                    progress = 100;
+                }
+            }
+            
+            return { activeWordIdx, progress };
+        }
+    );
+
+    // Get word state: 'past', 'highlighted', or 'future'
+    function getWordState(lineIdx: number, wordIdx: number, currentActiveLine: number, currentActiveWord: number): string {
+        if (lineIdx < currentActiveLine) return 'past';
+        if (lineIdx > currentActiveLine) return 'future';
+        if (wordIdx < currentActiveWord) return 'past';
+        if (wordIdx === currentActiveWord) return 'highlighted';
+        return 'future';
+    }
 
     // Load album art
     $: if ($currentTrack?.album_id) {
@@ -173,15 +232,29 @@
                     {#if $lyricsData?.lines && $lyricsData.lines.length > 0}
                         {#each $lyricsData.lines as line, i}
                             {@const distance = Math.abs(i - $activeLine)}
+                            {@const hasWordSync = line.words && line.words.length > 0}
+                            {@const isActiveLine = i === $activeLine}
                             <p
                                 class="lyric-line"
-                                class:active={i === $activeLine}
+                                class:active={isActiveLine}
                                 class:near={distance === 1}
                                 class:mid={distance === 2}
                                 class:far={distance >= 3}
                                 class:passed={i < $activeLine}
+                                class:word-sync={hasWordSync && isActiveLine}
                             >
-                                {line.text}
+                                {#if hasWordSync && line.words}
+                                    {#each line.words as word, wordIdx}
+                                        {@const wordState = getWordState(i, wordIdx, $activeLine, $wordSyncState.activeWordIdx)}
+                                        {@const wordProgress = isActiveLine && wordIdx === $wordSyncState.activeWordIdx ? $wordSyncState.progress : 0}
+                                        <span 
+                                            class="lyric-word {wordState}"
+                                            style="--word-progress: {wordProgress}%;"
+                                        >{word.word}</span>{#if wordIdx < line.words.length - 1}{' '}{/if}
+                                    {/each}
+                                {:else}
+                                    {line.text}
+                                {/if}
                             </p>
                         {/each}
                     {:else}
@@ -466,6 +539,63 @@
     .lyric-line.passed.far {
         color: rgba(255, 255, 255, 0.2);
         filter: blur(3.5px);
+    }
+
+    /* Word highlighting - Apple Music style */
+    .lyric-word {
+        --word-progress: 0%;
+        --highlight-color: #fff;
+        --future-color: rgba(255, 255, 255, 0.35);
+        display: inline;
+        color: transparent;
+        background-clip: text;
+        -webkit-background-clip: text;
+        background-size: 200% 100%;
+        will-change: background-position;
+    }
+
+    .lyric-line.word-sync .lyric-word.highlighted {
+        background-image: linear-gradient(
+            to right,
+            var(--highlight-color) 0%,
+            var(--highlight-color) var(--word-progress),
+            var(--future-color) var(--word-progress),
+            var(--future-color) 100%
+        );
+    }
+
+    .lyric-line.word-sync .lyric-word.past {
+        background-image: linear-gradient(
+            to right,
+            var(--highlight-color) 0%,
+            var(--highlight-color) 100%
+        );
+    }
+
+    .lyric-line.word-sync .lyric-word.future {
+        background-image: linear-gradient(
+            to right,
+            var(--future-color) 0%,
+            var(--future-color) 100%
+        );
+    }
+
+    /* Past lines - all words fully highlighted */
+    .lyric-line.passed .lyric-word {
+        background-image: linear-gradient(
+            to right,
+            var(--highlight-color) 0%,
+            var(--highlight-color) 100%
+        );
+    }
+
+    /* Future lines - all words dimmed */
+    .lyric-line:not(.active):not(.passed) .lyric-word {
+        background-image: linear-gradient(
+            to right,
+            var(--future-color) 0%,
+            var(--future-color) 100%
+        );
     }
 
     .no-lyrics {

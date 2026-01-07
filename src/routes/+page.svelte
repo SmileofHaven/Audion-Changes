@@ -9,11 +9,16 @@
   import ContextMenu from "$lib/components/ContextMenu.svelte";
   import { loadLibrary, loadPlaylists } from "$lib/stores/library";
   import { isTauri } from "$lib/api/tauri";
+  import { initializeFromPersistedState, setupAutoSave } from "$lib/stores/persist";
 
   let isLoading = true;
   let notInTauri = false;
 
   onMount(async () => {
+    // Initialize persisted state (volume, lyrics visibility, etc.)
+    initializeFromPersistedState();
+    setupAutoSave();
+
     // Check if we're in Tauri environment
     if (!isTauri()) {
       notInTauri = true;
