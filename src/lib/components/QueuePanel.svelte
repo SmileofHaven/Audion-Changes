@@ -84,6 +84,8 @@
                                     <img
                                         src={getTrackArt($currentTrack.album_id)}
                                         alt=""
+                                        loading="lazy"
+                                        decoding="async"
                                     />
                                 {:else}
                                     <div class="art-placeholder">
@@ -132,7 +134,7 @@
                         <span class="count">{upcomingTracks.length}</span>
                     </h4>
                     <div class="queue-list">
-                        {#each upcomingTracks as track, i (track.id)}
+                        {#each upcomingTracks as track, i (`upcoming-${i}-${track.id}`)}
                             {@const actualIndex = $queueIndex + 1 + i}
                             <div
                                 class="queue-track"
@@ -148,6 +150,8 @@
                                             <img
                                                 src={getTrackArt(track.album_id)}
                                                 alt=""
+                                                loading="lazy"
+                                                decoding="async"
                                             />
                                         {:else}
                                             <div class="art-placeholder">
@@ -218,6 +222,8 @@
                                             <img
                                                 src={getTrackArt(track.album_id)}
                                                 alt=""
+                                                loading="lazy"
+                                                decoding="async"
                                             />
                                         {:else}
                                             <div class="art-placeholder">

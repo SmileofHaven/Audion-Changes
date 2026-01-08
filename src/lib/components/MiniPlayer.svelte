@@ -74,7 +74,7 @@
         <!-- Album Art with expand -->
         <button class="album-art" on:click={handleExpand} title="Expand player">
             {#if albumArt}
-                <img src={albumArt} alt="Album art" />
+                <img src={albumArt} alt="Album art" decoding="async" />
             {:else}
                 <div class="art-placeholder">
                     <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24">

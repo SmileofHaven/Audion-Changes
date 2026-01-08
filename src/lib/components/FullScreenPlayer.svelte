@@ -142,7 +142,7 @@
                     in:fly={{ y: 20, duration: 500, delay: 100 }}
                 >
                     {#if albumArt}
-                        <img src={albumArt} alt="Album Art" />
+                        <img src={albumArt} alt="Album Art" decoding="async" />
                     {:else}
                         <div class="art-placeholder">
                             <svg

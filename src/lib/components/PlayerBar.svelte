@@ -129,7 +129,7 @@
         {#if $currentTrack}
             <div class="album-art">
                 {#if albumArt}
-                    <img src={albumArt} alt="Album art" />
+                    <img src={albumArt} alt="Album art" decoding="async" />
                 {:else}
                     <div class="album-art-placeholder">
                         <svg

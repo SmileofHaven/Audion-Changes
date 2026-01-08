@@ -12,6 +12,8 @@ export const isPlaying = writable(false);
 // Queue
 export const queue = writable<Track[]>([]);
 export const queueIndex = writable(0);
+// Tracks the number of user-added tracks in the queue (Spotify-like behavior)
+export const userQueueCount = writable(0);
 
 // Volume (0-1) - this is the SLIDER value (linear)
 // We use a logarithmic curve for actual audio output
@@ -113,6 +115,7 @@ export async function playTrack(track: Track): Promise<void> {
 export function playTracks(tracks: Track[], startIndex: number = 0): void {
     queue.set(tracks);
     queueIndex.set(startIndex);
+    userQueueCount.set(0); // Reset user queue when starting fresh
 
     if (tracks.length > 0 && startIndex < tracks.length) {
         playTrack(tracks[startIndex]);
@@ -168,6 +171,9 @@ export function nextTrack(): void {
 
     queueIndex.set(idx);
     playTrack(q[idx]);
+    
+    // Decrement user queue count if we consumed a user-added track
+    userQueueCount.update(c => Math.max(0, c - 1));
 }
 
 // Previous track
@@ -240,19 +246,21 @@ export const progress = derived(
 
 // Queue management functions
 
-// Add tracks to end of queue
+// Add tracks to queue (Spotify-like: after current track + previously user-added tracks)
 export function addToQueue(tracks: Track[]): void {
-    queue.update(q => [...q, ...tracks]);
-}
-
-// Add track to play next (after current)
-export function addToQueueNext(track: Track): void {
+    const currentIdx = get(queueIndex);
+    const userCount = get(userQueueCount);
+    // Insert position: after current track + user-added tracks
+    const insertPosition = currentIdx + 1 + userCount;
+    
     queue.update(q => {
-        const idx = get(queueIndex);
         const newQueue = [...q];
-        newQueue.splice(idx + 1, 0, track);
+        newQueue.splice(insertPosition, 0, ...tracks);
         return newQueue;
     });
+    
+    // Update user queue count
+    userQueueCount.update(c => c + tracks.length);
 }
 
 // Remove track from queue by index
@@ -296,12 +304,28 @@ export function reorderQueue(fromIndex: number, toIndex: number): void {
 export function clearUpcoming(): void {
     const currentIdx = get(queueIndex);
     queue.update(q => q.slice(0, currentIdx + 1));
+    userQueueCount.set(0); // Clear user queue count
 }
 
 // Play from specific index in queue
 export function playFromQueue(index: number): void {
     const q = get(queue);
+    const currentIdx = get(queueIndex);
+    const userCount = get(userQueueCount);
+    
     if (index >= 0 && index < q.length) {
+        // Calculate how many user-queued tracks are being skipped
+        const userQueueEnd = currentIdx + 1 + userCount;
+        if (index > currentIdx && index <= userQueueEnd) {
+            // Skipping within user queue
+            const skipped = index - currentIdx;
+            userQueueCount.update(c => Math.max(0, c - skipped));
+        } else if (index > userQueueEnd) {
+            // Skipping past user queue entirely
+            userQueueCount.set(0);
+        }
+        // If jumping backwards, keep user queue count as is
+        
         queueIndex.set(index);
         playTrack(q[index]);
     }

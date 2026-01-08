@@ -21,15 +21,20 @@ export function toggleSettings() {
     isSettingsOpen.update(v => !v);
 }
 
+export interface ContextMenuItem {
+    label: string;
+    action?: () => void;
+    danger?: boolean;
+    disabled?: boolean;
+    submenu?: ContextMenuItem[];
+    type?: 'item' | 'separator';
+}
+
 export interface ContextMenu {
     visible: boolean;
     x: number;
     y: number;
-    items: {
-        label: string;
-        action: () => void;
-        danger?: boolean;
-    }[];
+    items: (ContextMenuItem | { type: 'separator' })[];
 }
 
 export const contextMenu = writable<ContextMenu>({

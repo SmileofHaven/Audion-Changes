@@ -74,6 +74,7 @@
                     <img
                         src={getAlbumArtSrc(album.art_data)}
                         alt={album.name}
+                        decoding="async"
                     />
                 {:else}
                     <div class="album-cover-placeholder">

@@ -1,9 +1,9 @@
 <script lang="ts">
     import type { Track } from "$lib/api/tauri";
-    import { formatDuration, getAlbumArtSrc } from "$lib/api/tauri";
-    import { playTracks, currentTrack, isPlaying } from "$lib/stores/player";
+    import { formatDuration, getAlbumArtSrc, addTrackToPlaylist } from "$lib/api/tauri";
+    import { playTracks, currentTrack, isPlaying, addToQueue } from "$lib/stores/player";
     import { contextMenu } from "$lib/stores/ui";
-    import { albums } from "$lib/stores/library";
+    import { albums, playlists, loadPlaylists } from "$lib/stores/library";
 
     export let tracks: Track[] = [];
     export let title: string = "Tracks";
@@ -26,9 +26,27 @@
         playTracks(tracks, index);
     }
 
-    function handleContextMenu(e: MouseEvent, index: number) {
+    async function handleContextMenu(e: MouseEvent, index: number) {
         e.preventDefault();
         const track = tracks[index];
+        
+        // Ensure playlists are loaded
+        if ($playlists.length === 0) {
+            await loadPlaylists();
+        }
+        
+        // Build playlist submenu items
+        const playlistItems = $playlists.map(playlist => ({
+            label: playlist.name,
+            action: async () => {
+                try {
+                    await addTrackToPlaylist(playlist.id, track.id);
+                } catch (error) {
+                    console.error('Failed to add track to playlist:', error);
+                }
+            },
+        }));
+        
         contextMenu.set({
             visible: true,
             x: e.clientX,
@@ -38,11 +56,17 @@
                     label: "Play",
                     action: () => playTracks(tracks, index),
                 },
+                { type: "separator" },
                 {
                     label: "Add to Queue",
-                    action: () => {
-                        console.log("Add to queue", track); /* TODO */
-                    },
+                    action: () => addToQueue([track]),
+                },
+                { type: "separator" },
+                {
+                    label: "Add to Playlist",
+                    submenu: playlistItems.length > 0 ? playlistItems : [
+                        { label: "No playlists", action: () => {}, disabled: true }
+                    ],
                 },
             ],
         });
@@ -100,6 +124,8 @@
                                 src={albumArt}
                                 alt="Album cover"
                                 class="cover-image"
+                                loading="lazy"
+                                decoding="async"
                             />
                         {:else}
                             <div class="cover-placeholder">

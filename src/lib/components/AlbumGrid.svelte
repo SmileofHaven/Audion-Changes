@@ -19,6 +19,7 @@
                         src={getAlbumArtSrc(album.art_data)}
                         alt={album.name}
                         loading="lazy"
+                        decoding="async"
                     />
                 {:else}
                     <div class="album-art-placeholder">
