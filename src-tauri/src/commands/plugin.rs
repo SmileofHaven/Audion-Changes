@@ -175,76 +175,96 @@ pub async fn install_plugin(repo_url: String, plugin_dir: String) -> Result<Plug
     let owner = parts[parts.len() - 2];
     let repo = parts[parts.len() - 1];
 
-    // Fetch latest release
     let client = reqwest::Client::new();
-    let releases_url = format!(
-        "https://api.github.com/repos/{}/{}/releases/latest",
-        owner, repo
-    );
 
-    let response = client
-        .get(&releases_url)
+    // First, get repo info to find default branch
+    let repo_api_url = format!("https://api.github.com/repos/{}/{}", owner, repo);
+
+    let repo_response = client
+        .get(&repo_api_url)
         .header("User-Agent", "Audion-Plugin-Manager")
         .send()
         .await
-        .map_err(|e| format!("Failed to fetch releases: {}", e))?;
+        .map_err(|e| format!("Failed to fetch repo info: {}", e))?;
 
-    if !response.status().is_success() {
+    let default_branch = if repo_response.status().is_success() {
+        let repo_info: serde_json::Value = repo_response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse repo info: {}", e))?;
+        repo_info["default_branch"]
+            .as_str()
+            .unwrap_or("main")
+            .to_string()
+    } else {
+        "main".to_string()
+    };
+
+    // Fetch plugin.json from raw content
+    let manifest_url = format!(
+        "https://raw.githubusercontent.com/{}/{}/{}/plugin.json",
+        owner, repo, default_branch
+    );
+
+    let manifest_response = client
+        .get(&manifest_url)
+        .header("User-Agent", "Audion-Plugin-Manager")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch plugin.json: {}", e))?;
+
+    if !manifest_response.status().is_success() {
         return Err(format!(
-            "Failed to fetch releases: HTTP {}",
-            response.status()
+            "Failed to fetch plugin.json: HTTP {}",
+            manifest_response.status()
         ));
     }
 
-    let release: serde_json::Value = response
+    let manifest: PluginManifest = manifest_response
         .json()
         .await
-        .map_err(|e| format!("Failed to parse release: {}", e))?;
+        .map_err(|e| format!("Failed to parse plugin.json: {}", e))?;
 
-    // Find the plugin archive in assets
-    let assets = release["assets"].as_array().ok_or("No assets in release")?;
+    // Create plugin directory
+    let plugin_name = manifest.name.clone();
+    let safe_name = plugin_name.replace(" ", "-").to_lowercase();
+    let plugin_path = PathBuf::from(&plugin_dir).join(&safe_name);
+    fs::create_dir_all(&plugin_path).map_err(|e| format!("Failed to create plugin dir: {}", e))?;
 
-    let asset = assets
-        .iter()
-        .find(|a| {
-            let name = a["name"].as_str().unwrap_or("");
-            name.ends_with(".zip") || name.ends_with(".tar.gz")
-        })
-        .ok_or("No plugin archive found in release")?;
+    // Save plugin.json
+    let manifest_json = serde_json::to_string_pretty(&manifest)
+        .map_err(|e| format!("Failed to serialize manifest: {}", e))?;
+    fs::write(plugin_path.join("plugin.json"), &manifest_json)
+        .map_err(|e| format!("Failed to save plugin.json: {}", e))?;
 
-    let download_url = asset["browser_download_url"]
-        .as_str()
-        .ok_or("No download URL")?;
+    // Fetch the entry file (index.js or plugin.wasm)
+    let entry_url = format!(
+        "https://raw.githubusercontent.com/{}/{}/{}/{}",
+        owner, repo, default_branch, manifest.entry
+    );
 
-    // Download the archive
-    let archive_response = client
-        .get(download_url)
+    let entry_response = client
+        .get(&entry_url)
         .header("User-Agent", "Audion-Plugin-Manager")
         .send()
         .await
-        .map_err(|e| format!("Failed to download plugin: {}", e))?;
+        .map_err(|e| format!("Failed to fetch entry file: {}", e))?;
 
-    let archive_bytes = archive_response
+    if !entry_response.status().is_success() {
+        return Err(format!(
+            "Failed to fetch {}: HTTP {}",
+            manifest.entry,
+            entry_response.status()
+        ));
+    }
+
+    let entry_bytes = entry_response
         .bytes()
         .await
-        .map_err(|e| format!("Failed to read plugin data: {}", e))?;
+        .map_err(|e| format!("Failed to read entry file: {}", e))?;
 
-    // Create plugin directory
-    let plugin_name = repo.to_string();
-    let plugin_path = PathBuf::from(&plugin_dir).join(&plugin_name);
-    fs::create_dir_all(&plugin_path).map_err(|e| format!("Failed to create plugin dir: {}", e))?;
-
-    // Save the archive temporarily
-    let archive_path = plugin_path.join("plugin.zip");
-    fs::write(&archive_path, &archive_bytes)
-        .map_err(|e| format!("Failed to save archive: {}", e))?;
-
-    // Note: In a full implementation, we'd extract the archive here
-    // For now, we expect the plugin to be manually extracted or use a proper unzip library
-
-    // Try to read the manifest
-    let manifest =
-        read_plugin_manifest(&plugin_path).ok_or("Failed to read plugin manifest after install")?;
+    fs::write(plugin_path.join(&manifest.entry), &entry_bytes)
+        .map_err(|e| format!("Failed to save entry file: {}", e))?;
 
     // Add to state
     let mut states = load_plugin_states(&plugin_dir);
@@ -276,7 +296,9 @@ pub async fn install_plugin(repo_url: String, plugin_dir: String) -> Result<Plug
 
 #[tauri::command]
 pub fn uninstall_plugin(name: String, plugin_dir: String) -> Result<bool, String> {
-    let plugin_path = PathBuf::from(&plugin_dir).join(&name);
+    // Convert to safe folder name (matching install logic)
+    let safe_name = name.replace(" ", "-").to_lowercase();
+    let plugin_path = PathBuf::from(&plugin_dir).join(&safe_name);
 
     if !plugin_path.exists() {
         return Err(format!("Plugin not found: {}", name));
@@ -285,7 +307,7 @@ pub fn uninstall_plugin(name: String, plugin_dir: String) -> Result<bool, String
     // Remove plugin directory
     fs::remove_dir_all(&plugin_path).map_err(|e| format!("Failed to remove plugin: {}", e))?;
 
-    // Remove from state
+    // Remove from state (using original name as key)
     let mut states = load_plugin_states(&plugin_dir);
     states.plugins.remove(&name);
     save_plugin_states(&plugin_dir, &states)?;

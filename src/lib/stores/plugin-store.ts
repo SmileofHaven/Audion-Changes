@@ -1,9 +1,11 @@
 // Plugin state store
 import { writable, derived, get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import type { AudionPluginManifest } from '../plugins/schema';
 import type { MarketplacePlugin } from '../plugins/marketplace';
 import { fetchMarketplacePlugins, searchPlugins, filterByCategory } from '../plugins/marketplace';
+import { PluginRuntime } from '../plugins/runtime';
 
 // Types matching Rust backend
 export interface PluginInfo {
@@ -41,6 +43,7 @@ function createPluginStore() {
     const { subscribe, set, update } = writable<PluginStoreState>(initialState);
 
     let pluginDir: string = '';
+    let runtime: PluginRuntime | null = null;
 
     return {
         subscribe,
@@ -53,7 +56,18 @@ function createPluginStore() {
                 // Get plugin directory from backend
                 pluginDir = await invoke<string>('get_plugin_dir');
 
-                // Load installed plugins
+                // Initialize runtime with plugin directory (using Tauri asset protocol)
+                runtime = new PluginRuntime({
+                    pluginDir: convertFileSrc(pluginDir),
+                    onError: (name, err) => {
+                        console.error(`[Plugin:${name}] Error:`, err);
+                    },
+                    onLoad: (plugin) => {
+                        console.log(`[PluginStore] Loaded plugin: ${plugin.manifest.name}`);
+                    }
+                });
+
+                // Load installed plugins from backend
                 const installed = await invoke<PluginInfo[]>('list_plugins', { pluginDir });
 
                 update(s => ({
@@ -61,6 +75,21 @@ function createPluginStore() {
                     installed,
                     loading: false
                 }));
+
+                // Auto-load enabled plugins
+                for (const plugin of installed) {
+                    if (plugin.enabled) {
+                        try {
+                            // Grant permissions before loading
+                            runtime.grantPermissions(plugin.name, plugin.granted_permissions);
+                            await runtime.loadPlugin(plugin.manifest);
+                            runtime.enablePlugin(plugin.name);
+                            console.log(`[PluginStore] Auto-loaded enabled plugin: ${plugin.name}`);
+                        } catch (err) {
+                            console.error(`[PluginStore] Failed to load ${plugin.name}:`, err);
+                        }
+                    }
+                }
             } catch (err) {
                 update(s => ({
                     ...s,
@@ -169,6 +198,22 @@ function createPluginStore() {
             try {
                 await invoke('enable_plugin', { name, pluginDir });
 
+                // Load plugin via runtime
+                const state = get({ subscribe });
+                const plugin = state.installed.find(p => p.name === name);
+
+                if (plugin && runtime) {
+                    // Grant permissions and load
+                    runtime.grantPermissions(name, plugin.granted_permissions);
+
+                    // Check if already loaded in runtime
+                    if (!runtime.getPlugin(name)) {
+                        await runtime.loadPlugin(plugin.manifest);
+                    }
+                    runtime.enablePlugin(name);
+                    console.log(`[PluginStore] Enabled plugin: ${name}`);
+                }
+
                 update(s => ({
                     ...s,
                     installed: s.installed.map(p =>
@@ -187,6 +232,12 @@ function createPluginStore() {
         async disablePlugin(name: string): Promise<boolean> {
             try {
                 await invoke('disable_plugin', { name, pluginDir });
+
+                // Disable in runtime
+                if (runtime) {
+                    runtime.disablePlugin(name);
+                    console.log(`[PluginStore] Disabled plugin: ${name}`);
+                }
 
                 update(s => ({
                     ...s,

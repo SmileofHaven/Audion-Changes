@@ -60,7 +60,6 @@ export async function fetchLyricsForTrack(): Promise<void> {
         // Try to load from local cache first (via Tauri)
         const cached = await loadLrcFromCache(track.path);
         if (cached && fetchId === currentFetchId) {
-            console.log('[LyricsStore] 📂 Loaded from cache:', cached);
             const lines = lyricsManager.parseLRC(cached);
             lyricsData.set({
                 lines,
@@ -94,7 +93,6 @@ export async function fetchLyricsForTrack(): Promise<void> {
     } catch (error) {
         if (fetchId === currentFetchId) {
             lyricsError.set('Failed to fetch lyrics');
-            console.error('[LyricsStore] Error:', error);
         }
     } finally {
         if (fetchId === currentFetchId) {
@@ -108,9 +106,7 @@ async function saveLrcToCache(musicPath: string, lrcContent: string): Promise<vo
     try {
         const { invoke } = await import('@tauri-apps/api/core');
         await invoke('save_lrc_file', { musicPath, lrcContent });
-        console.log('[LyricsStore] Saved LRC to cache');
     } catch (error) {
-        console.log('[LyricsStore] Failed to save LRC:', error);
     }
 }
 
@@ -119,12 +115,8 @@ async function loadLrcFromCache(musicPath: string): Promise<string | null> {
     try {
         const { invoke } = await import('@tauri-apps/api/core');
         const content = await invoke<string | null>('load_lrc_file', { musicPath });
-        if (content) {
-            console.log('[LyricsStore] Loaded LRC from cache');
-        }
         return content;
     } catch (error) {
-        console.log('[LyricsStore] No cached LRC found');
         return null;
     }
 }
@@ -157,12 +149,8 @@ async function deleteLrcFromCache(musicPath: string): Promise<boolean> {
     try {
         const { invoke } = await import('@tauri-apps/api/core');
         const deleted = await invoke<boolean>('delete_lrc_file', { musicPath });
-        if (deleted) {
-            console.log('[LyricsStore] Deleted LRC from cache');
-        }
         return deleted;
     } catch (error) {
-        console.log('[LyricsStore] Failed to delete LRC:', error);
         return false;
     }
 }
@@ -174,7 +162,7 @@ export const lyricsStore = {
         lyricsError.set(null);
         lyricsLoading.set(false);
     },
-    
+
     async clearCurrentTrackCache(): Promise<void> {
         const track = get(currentTrack);
         if (track) {

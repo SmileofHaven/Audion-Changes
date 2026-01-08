@@ -24,7 +24,7 @@ export class Musixmatch {
         }
 
         const params: [string, string][] = [...query];
-        
+
         if (this.token !== null) {
             params.push(["usertoken", this.token]);
         }
@@ -34,7 +34,7 @@ export class Musixmatch {
             action,
             params
         });
-        
+
         return JSON.parse(responseText);
     }
 
@@ -49,15 +49,12 @@ export class Musixmatch {
 
         if (cachedToken && expirationTime && currentTime < expirationTime) {
             this.token = cachedToken;
-            console.log('[Musixmatch] Using cached token');
             return;
         }
 
-        console.log('[Musixmatch] Fetching new token...');
         const data = await this._get("token.get", [["user_language", "en"]]);
 
         if (data.message.header.status_code === 401) {
-            console.log('[Musixmatch] Token request got 401');
             localStorage.removeItem(tokenKey);
             localStorage.removeItem(expirationKey);
             this.token = null;
@@ -68,7 +65,6 @@ export class Musixmatch {
                 throw new Error('Musixmatch token fetch failed after max retries');
             }
 
-            console.log(`[Musixmatch] Waiting 10s before retry...`);
             await new Promise(resolve => setTimeout(resolve, 10000));
             return this._getToken();
         }
@@ -85,7 +81,6 @@ export class Musixmatch {
         this.token = newToken;
         localStorage.setItem(tokenKey, newToken);
         localStorage.setItem(expirationKey, String(newExpirationTime));
-        console.log('[Musixmatch] Got new valid token');
     }
 
     clearToken(): void {
@@ -123,7 +118,6 @@ export class Musixmatch {
 
             return { synced: body.subtitle.subtitle_body };
         } catch (error) {
-            console.log('[Musixmatch] Error getting LRC by ID:', error);
             return null;
         }
     }
@@ -157,13 +151,11 @@ export class Musixmatch {
                 return { synced: lrcStr };
             }
         } catch (error) {
-            console.log('[Musixmatch] Error getting word-by-word lyrics:', error);
         }
         return { synced: null };
     }
 
     async getLrc(searchTerm: string, retryOnAuth = true): Promise<{ synced: string } | null> {
-        console.log(`[Musixmatch] Searching for: "${searchTerm}"`);
 
         try {
             const data = await this._get("track.search", [
@@ -194,7 +186,6 @@ export class Musixmatch {
             // Take first result
             const track = tracks[0];
             const trackId = String(track.track.track_id);
-            console.log(`[Musixmatch] Found: "${track.track.track_name}" by "${track.track.artist_name}"`);
 
             if (this.enhanced) {
                 const lrc = await this.getLrcWordByWord(trackId);
@@ -205,7 +196,6 @@ export class Musixmatch {
 
             return this.getLrcById(trackId);
         } catch (error) {
-            console.log('[Musixmatch] Error searching for lyrics:', error);
             return null;
         }
     }

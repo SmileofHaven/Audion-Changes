@@ -1,6 +1,18 @@
 // Plugin loader for JS and WASM plugins
 import type { AudionPluginManifest } from './schema';
 import { PLUGIN_PERMISSIONS } from './schema';
+import { get } from 'svelte/store';
+import {
+  currentTrack,
+  isPlaying,
+  currentTime,
+  duration,
+  queue,
+  togglePlay,
+  nextTrack,
+  previousTrack,
+  seek
+} from '$lib/stores/player';
 
 export interface WasmPluginExports {
   init?: () => void;
@@ -55,12 +67,17 @@ export class PluginRuntime {
   private async loadJsPlugin(manifest: AudionPluginManifest): Promise<LoadedPlugin> {
     return new Promise((resolve, reject) => {
       const script = document.createElement('script');
-      script.src = `${this.config.pluginDir}/${manifest.name}/${manifest.entry}`;
+      // Use safe folder name (lowercase with dashes, matching Rust backend)
+      const safeName = manifest.name.replace(/\s+/g, '-').toLowerCase();
+      script.src = `${this.config.pluginDir}/${safeName}/${manifest.entry}`;
       script.async = true;
       script.id = `plugin-${manifest.name}`;
 
       script.onload = () => {
-        const instance = (window as any)[manifest.name] || (window as any).AudionPlugin;
+        // Try various global names the plugin might register under
+        const instance = (window as any)[manifest.name.replace(/\s+/g, '')] ||
+          (window as any)[manifest.name] ||
+          (window as any).AudionPlugin;
         const plugin: LoadedPlugin = {
           manifest,
           instance,
@@ -88,7 +105,9 @@ export class PluginRuntime {
 
   // Load a WASM plugin
   private async loadWasmPlugin(manifest: AudionPluginManifest): Promise<LoadedPlugin> {
-    const wasmUrl = `${this.config.pluginDir}/${manifest.name}/${manifest.entry}`;
+    // Use safe folder name (lowercase with dashes, matching Rust backend)
+    const safeName = manifest.name.replace(/\s+/g, '-').toLowerCase();
+    const wasmUrl = `${this.config.pluginDir}/${safeName}/${manifest.entry}`;
 
     try {
       const response = await fetch(wasmUrl);
@@ -173,11 +192,68 @@ export class PluginRuntime {
     };
   }
 
-  // Host function call dispatcher (to be implemented with actual APIs)
+  // Host function call dispatcher - connects plugins to Audion APIs
   private callHost(method: string, ...args: any[]): any {
-    // This will be connected to actual Audion APIs
-    console.log(`[PluginRuntime] Host call: ${method}`, args);
-    return null;
+    switch (method) {
+      // Player read APIs
+      case 'player.getCurrentTrack':
+        return get(currentTrack);
+
+      case 'player.isPlaying':
+        return get(isPlaying);
+
+      case 'player.getCurrentTime':
+        return get(currentTime);
+
+      case 'player.getDuration':
+        return get(duration);
+
+      case 'player.getQueue':
+        return get(queue);
+
+      // Player control APIs
+      case 'player.play':
+        if (!get(isPlaying)) togglePlay();
+        return true;
+
+      case 'player.pause':
+        if (get(isPlaying)) togglePlay();
+        return true;
+
+      case 'player.togglePlay':
+        togglePlay();
+        return true;
+
+      case 'player.next':
+        nextTrack();
+        return true;
+
+      case 'player.prev':
+        previousTrack();
+        return true;
+
+      case 'player.seek':
+        if (typeof args[0] === 'number') {
+          seek(args[0]);
+          return true;
+        }
+        return false;
+
+      // Storage APIs (simple localStorage wrapper per plugin)
+      case 'storage.get':
+        const getKey = `audion_plugin_${args[0]}_${args[1]}`;
+        const stored = localStorage.getItem(getKey);
+        return stored ? JSON.parse(stored) : null;
+
+      case 'storage.set':
+        const setKey = `audion_plugin_${args[0]}_${args[1]}`;
+        localStorage.setItem(setKey, JSON.stringify(args[2]));
+        return true;
+
+      default:
+        console.warn(`[PluginRuntime] Unknown host method: ${method}`);
+        return null;
+    }
   }
 
   // Get API surface for JS plugins

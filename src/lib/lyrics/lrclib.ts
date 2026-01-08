@@ -29,14 +29,11 @@ export class LRCLib {
         const cached = this.cache.get(cacheKey);
 
         if (cached && Date.now() - cached.timestamp < this.cacheExpiry) {
-            console.log('[LRCLIB] Using cached result');
             return cached.data;
         }
 
         const query = `${title} ${artist}`.trim();
         const url = `${API.BASE_URL}${API.SEARCH_ENDPOINT}?q=${encodeURIComponent(query)}`;
-
-        console.log(`[LRCLIB] Searching: "${query}"`);
 
         try {
             const controller = new AbortController();
@@ -57,16 +54,9 @@ export class LRCLib {
 
             // Cache the result
             this.cache.set(cacheKey, { data, timestamp: Date.now() });
-
-            console.log(`[LRCLIB] Found ${data.length} results`);
             return data;
 
         } catch (error) {
-            if ((error as Error).name === 'AbortError') {
-                console.log('[LRCLIB] Request timed out');
-            } else {
-                console.log('[LRCLIB] Error:', error);
-            }
             return [];
         }
     }
@@ -80,13 +70,10 @@ export class LRCLib {
 
         const url = `${API.BASE_URL}${API.GET_ENDPOINT}?${params.toString()}`;
 
-        console.log(`[LRCLIB] Getting exact match: "${title}" by "${artist}"`);
-
         try {
             const response = await fetch(url);
 
             if (response.status === 404) {
-                console.log('[LRCLIB] No exact match found');
                 return null;
             }
 
@@ -98,7 +85,6 @@ export class LRCLib {
             return data;
 
         } catch (error) {
-            console.log('[LRCLIB] Error:', error);
             return null;
         }
     }
@@ -121,7 +107,6 @@ export class LRCLib {
         // Try exact match first
         const exact = await this.get(artist, title, album, duration);
         if (exact && (exact.syncedLyrics || exact.plainLyrics)) {
-            console.log('[LRCLIB] Got exact match');
             return {
                 synced: exact.syncedLyrics,
                 plain: exact.plainLyrics
@@ -133,7 +118,6 @@ export class LRCLib {
         const best = this.findBestMatch(results, artist, title);
 
         if (best) {
-            console.log(`[LRCLIB] Best match: "${best.trackName}" by "${best.artistName}"`);
             return {
                 synced: best.syncedLyrics,
                 plain: best.plainLyrics

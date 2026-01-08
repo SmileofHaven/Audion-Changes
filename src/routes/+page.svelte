@@ -12,9 +12,13 @@
   import ThemeSettings from "$lib/components/ThemeSettings.svelte";
   import { loadLibrary, loadPlaylists } from "$lib/stores/library";
   import { isTauri } from "$lib/api/tauri";
-  import { initializeFromPersistedState, setupAutoSave } from "$lib/stores/persist";
+  import {
+    initializeFromPersistedState,
+    setupAutoSave,
+  } from "$lib/stores/persist";
   import { theme } from "$lib/stores/theme";
   import { isMiniPlayer } from "$lib/stores/ui";
+  import { pluginStore } from "$lib/stores/plugin-store";
 
   let isLoading = true;
   let notInTauri = false;
@@ -36,7 +40,12 @@
     }
 
     try {
-      await Promise.all([loadLibrary(), loadPlaylists()]);
+      await Promise.all([
+        loadLibrary(),
+        loadPlaylists(),
+        // Initialize plugins to auto-load enabled ones
+        pluginStore.init(),
+      ]);
     } catch (error) {
       console.error("Failed to load library:", error);
     } finally {

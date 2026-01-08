@@ -59,12 +59,10 @@ class LyricsManager {
             // Parse word-level timing if enabled and present: <mm:ss.xx>word
             if (parseWordSync) {
                 const wordTimings = this.parseWordTimings(text, time);
-                console.log('[LyricsManager] Line wordTimings:', wordTimings.length, 'words:', wordTimings.map(w => w.word));
                 if (wordTimings.length > 0 && wordTimings.some(w => w.time !== time)) {
                     lyricLine.words = wordTimings;
                     // Clean text from timing tags
                     lyricLine.text = wordTimings.map(w => w.word).join(' ');
-                    console.log('[LyricsManager] Cleaned text:', lyricLine.text);
                 }
             }
 
@@ -82,27 +80,27 @@ class LyricsManager {
      */
     private parseWordTimings(text: string, lineTime: number): WordTiming[] {
         const words: WordTiming[] = [];
-        
+
         // Match <mm:ss.xx> followed by content until next <
         const wordTimingRegex = /<(\d+):(\d+)\.(\d+)>([^<]+)/g;
         let match;
-        
+
         while ((match = wordTimingRegex.exec(text)) !== null) {
             const minutes = parseInt(match[1]);
             const seconds = parseInt(match[2]);
             const centiseconds = parseInt(match[3].padEnd(2, '0'));
             const word = match[4].trim();
-            
+
             // Skip empty content (gaps between words)
             if (!word) continue;
-            
+
             words.push({
                 word: word,
                 time: minutes * 60 + seconds + centiseconds / 100,
                 endTime: 0 // Will be filled below
             });
         }
-        
+
         // Calculate end times based on next word's start time
         for (let i = 0; i < words.length; i++) {
             if (i < words.length - 1) {
@@ -113,7 +111,7 @@ class LyricsManager {
                 words[i].endTime = words[i].time + 0.5;
             }
         }
-        
+
         return words;
     }
 
@@ -152,31 +150,21 @@ class LyricsManager {
         const cleanedArtist = artist || 'Unknown Artist';
 
         if (!cleanedTitle) {
-            console.log('[LyricsManager] ❌ No title provided');
             return null;
         }
-
-        console.log(`[LyricsManager] 🎵 Fetching lyrics for: "${cleanedTitle}" by "${cleanedArtist}"`);
-        console.log(`[LyricsManager] 📀 Album: ${album || 'N/A'}, Duration: ${duration || 'N/A'}s`);
 
         const searchTerm = `${cleanedTitle} ${cleanedArtist}`;
 
         // 1. Try Musixmatch first for word-by-word lyrics (best experience)
-        console.log('[LyricsManager] 🔍 Step 1: Trying Musixmatch for word-by-word lyrics...');
         try {
             const mxResult = await this.musixmatch.getLrc(searchTerm);
 
             if (mxResult?.synced) {
-                console.log('[LyricsManager] ✅ Musixmatch returned synced lyrics');
-                console.log('[LyricsManager] 📝 Raw lyrics from Musixmatch:', mxResult.synced);
                 const lines = this.parseLRC(mxResult.synced);
-                console.log('[LyricsManager] 📊 Parsed lines:', lines);
                 const hasWordSync = lines.some(l => l.words && l.words.length > 0);
-                console.log(`[LyricsManager] 📊 Parsed ${lines.length} lines, hasWordSync: ${hasWordSync}`);
 
                 if (hasWordSync) {
                     const wordSyncCount = lines.filter(l => l.words && l.words.length > 0).length;
-                    console.log(`[LyricsManager] 🎉 SUCCESS: Got word-by-word lyrics! (${wordSyncCount}/${lines.length} lines with word timing)`);
                     return {
                         lines,
                         source: 'musixmatch',
@@ -184,17 +172,13 @@ class LyricsManager {
                         raw: mxResult.synced
                     };
                 } else {
-                    console.log('[LyricsManager] ⚠️ Musixmatch has lyrics but no word-by-word sync, continuing...');
                 }
             } else {
-                console.log('[LyricsManager] ⚠️ Musixmatch returned no synced lyrics');
             }
         } catch (error) {
-            console.log('[LyricsManager] ❌ Musixmatch word-by-word error:', error);
         }
 
         // 2. Try LRCLIB for regular synced lyrics (fast & reliable)
-        console.log('[LyricsManager] 🔍 Step 2: Trying LRCLIB for synced lyrics...');
         try {
             const lrcResult = await this.lrclib.getLyrics(
                 cleanedArtist,
@@ -206,7 +190,6 @@ class LyricsManager {
             if (lrcResult.synced) {
                 // Don't parse word timing for LRCLIB - it only has line-level sync
                 const lines = this.parseLRC(lrcResult.synced, false);
-                console.log(`[LyricsManager] 🎉 SUCCESS: Got synced lyrics from LRCLIB (${lines.length} lines)`);
                 return {
                     lines,
                     source: 'lrclib',
@@ -214,20 +197,16 @@ class LyricsManager {
                     raw: lrcResult.synced
                 };
             } else {
-                console.log('[LyricsManager] ⚠️ LRCLIB returned no synced lyrics');
             }
         } catch (error) {
-            console.log('[LyricsManager] ❌ LRCLIB error:', error);
         }
 
         // 3. Try Musixmatch regular synced as last resort
-        console.log('[LyricsManager] 🔍 Step 3: Trying Musixmatch synced (fallback)...');
         try {
             const mxResult = await this.musixmatch.getLrc(searchTerm);
 
             if (mxResult?.synced) {
                 const lines = this.parseLRC(mxResult.synced);
-                console.log(`[LyricsManager] 🎉 SUCCESS: Got synced lyrics from Musixmatch fallback (${lines.length} lines)`);
                 return {
                     lines,
                     source: 'musixmatch',
@@ -235,13 +214,10 @@ class LyricsManager {
                     raw: mxResult.synced
                 };
             } else {
-                console.log('[LyricsManager] ⚠️ Musixmatch fallback returned no synced lyrics');
             }
         } catch (error) {
-            console.log('[LyricsManager] ❌ Musixmatch fallback error:', error);
         }
 
-        console.log('[LyricsManager] 😢 No lyrics found from any source');
         return null;
     }
 }
