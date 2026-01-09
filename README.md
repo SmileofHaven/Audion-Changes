@@ -18,8 +18,37 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-1.0.0-blue.svg" alt="Version">
-  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg" alt="Platform">
+  <img src="https://img.shields.io/badge/platform-Windows.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
+</p>
+
+---
+
+## 📸 Screenshots
+
+<p align="center">
+  <img src="promotional/mainpage.png" alt="Main Player" width="100%">
+  <br><em>Clean, modern interface for browsing your music library</em>
+</p>
+
+<p align="center">
+  <img src="promotional/mainwithlyrics.png" alt="Lyrics Panel" width="100%">
+  <br><em>Real-time synced lyrics with smooth scrolling</em>
+</p>
+
+<p align="center">
+  <img src="promotional/fullscreen.png" alt="Fullscreen Mode" width="100%">
+  <br><em>Immersive full-screen player with album art and lyrics</em>
+</p>
+
+<p align="center">
+  <img src="promotional/albumpage.png" alt="Album View" width="100%">
+  <br><em>Beautiful album pages with track listings</em>
+</p>
+
+<p align="center">
+  <img src="promotional/pluginmarketplace.png" alt="Plugin Manager" width="100%">
+  <br><em>Extensible plugin system for custom functionality</em>
 </p>
 
 ---
@@ -61,13 +90,11 @@
 ## 📦 Installation
 
 ### Pre-built Binaries
-Download the latest release for your platform from the [Releases](https://github.com/dupitydumb/audion/releases) page.
+Download the latest release for your platform from the [Releases](https://github.com/dupitydumb/Audion/releases/tag/1.0) page.
 
 | Platform | Download |
 |----------|----------|
 | Windows  | `Audion_1.0.0_x64-setup.exe` |
-| macOS    | `Audion_1.0.0_x64.dmg` |
-| Linux    | `Audion_1.0.0_amd64.AppImage` |
 
 ### Build from Source
 
@@ -80,7 +107,7 @@ Download the latest release for your platform from the [Releases](https://github
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/audion.git
+git clone https://github.com/dupitydumb/Audion.git
 cd audion
 
 # Install dependencies
