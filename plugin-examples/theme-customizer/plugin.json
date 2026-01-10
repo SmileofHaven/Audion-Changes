@@ -1,0 +1,21 @@
+{
+    "name": "Theme Customizer",
+    "version": "1.0.0",
+    "author": "Audion Team",
+    "description": "Transform Audion's look with stunning visual themes - from cyberpunk neon to cozy warmth",
+    "type": "js",
+    "entry": "index.js",
+    "permissions": [
+        "ui:inject",
+        "storage:local"
+    ],
+    "category": "appearance",
+    "tags": [
+        "theme",
+        "customization",
+        "appearance",
+        "colors",
+        "ui"
+    ],
+    "license": "MIT"
+}

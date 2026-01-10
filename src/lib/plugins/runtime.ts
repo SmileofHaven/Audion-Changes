@@ -22,6 +22,8 @@ import { PluginStorage } from './plugin-storage';
 import { RateLimiter, RATE_LIMITS } from './rate-limiter';
 import type { EventListener } from './event-emitter';
 import { uiSlotManager, type UISlotName } from './ui-slots';
+import { appSettings } from '$lib/stores/settings';
+import { invoke } from '@tauri-apps/api/core';
 
 export interface WasmPluginExports {
   init?: () => void;
@@ -307,9 +309,21 @@ export class PluginRuntime {
         clearUpcoming();
         return true;
 
-      case 'player.clearUpcoming':
-        clearUpcoming();
-        return true;
+      // Set current track (for streaming plugins like Tidal)
+      case 'player.setTrack':
+        if (args[0]) {
+          const track = args[0];
+          const previousTrack = get(currentTrack);
+          currentTrack.set(track);
+          // Set duration if provided
+          if (track.duration) {
+            duration.set(track.duration);
+          }
+          // Emit trackChange event for lyrics and other plugins
+          pluginEvents.emit('trackChange', { track, previousTrack });
+          return true;
+        }
+        return false;
 
       // UI Injection APIs
       case 'ui.inject':
@@ -342,7 +356,44 @@ export class PluginRuntime {
           console.warn(`[PluginRuntime:${pluginName}] Storage write rate limited`);
           return false;
         }
-        return plugin.storage.set(args[0], args[1]);
+      // Library Write APIs
+      case 'library.downloadTrack':
+        // args: [options: { url, filename, metadata }]
+        const options = args[0];
+        if (!options || !options.url || !options.filename) {
+          console.warn(`[PluginRuntime] Invalid download options`);
+          return null;
+        }
+
+        // Get global download location
+        const downloadLocation = get(appSettings).downloadLocation;
+        if (!downloadLocation) {
+          console.warn(`[PluginRuntime] No download location set`);
+          throw new Error('No download location configured in settings');
+        }
+
+        const fullPath = `${downloadLocation}/${options.filename}`;
+
+        // Call Rust command
+        return invoke('download_and_save_audio', {
+          input: {
+            url: options.url,
+            path: fullPath,
+            title: options.metadata?.title || null,
+            artist: options.metadata?.artist || null,
+            album: options.metadata?.album || null,
+            track_number: options.metadata?.trackNumber || null,
+            cover_url: options.metadata?.coverUrl || null
+          }
+        }).then(async (savedPath) => {
+          // Auto-rescan library
+          try {
+            await invoke('scan_music', { paths: [downloadLocation] });
+          } catch (e) {
+            console.warn('[PluginRuntime] Auto-rescan failed', e);
+          }
+          return savedPath;
+        });
 
       default:
         console.warn(`[PluginRuntime] Unknown host method: ${method}`);
@@ -405,6 +456,7 @@ export class PluginRuntime {
         seek: (time: number) => this.callHost(pluginName, 'player.seek', time),
         next: () => this.callHost(pluginName, 'player.next'),
         prev: () => this.callHost(pluginName, 'player.prev'),
+        setTrack: (track: any) => this.callHost(pluginName, 'player.setTrack', track),
         addToQueue: (tracks: any[]) => this.callHost(pluginName, 'player.addToQueue', tracks),
         removeFromQueue: (index: number) => this.callHost(pluginName, 'player.removeFromQueue', index),
         reorderQueue: (from: number, to: number) => this.callHost(pluginName, 'player.reorderQueue', from, to),
@@ -428,6 +480,11 @@ export class PluginRuntime {
         get: (key: string) => this.callHost(pluginName, 'storage.get', key),
         set: (key: string, value: any) => this.callHost(pluginName, 'storage.set', key, value)
       };
+    }
+
+    if (this.hasPermission(pluginName, 'library:write')) {
+      if (!api.library) api.library = {};
+      api.library.downloadTrack = (options: any) => this.callHost(pluginName, 'library.downloadTrack', options);
     }
 
     if (this.hasPermission(pluginName, 'ui:inject')) {

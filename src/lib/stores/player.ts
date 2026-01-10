@@ -129,6 +129,10 @@ export async function playTrack(track: Track): Promise<void> {
             audioElement.src = src;
             await audioElement.play();
         } catch (error) {
+            // Ignore AbortError - happens when play() is interrupted by new load
+            if (error instanceof Error && error.name === 'AbortError') {
+                return;
+            }
             console.error('Failed to play track:', error);
         }
     }
@@ -153,7 +157,10 @@ export function togglePlay(): void {
     if (!audioElement) return;
 
     if (audioElement.paused) {
-        audioElement.play().catch(console.error);
+        audioElement.play().catch(error => {
+            if (error instanceof Error && error.name === 'AbortError') return;
+            console.error(error);
+        });
     } else {
         audioElement.pause();
     }

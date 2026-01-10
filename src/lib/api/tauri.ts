@@ -49,6 +49,7 @@ export interface Track {
     album_id: number | null;
     format: string | null;
     bitrate: number | null;
+    cover_url?: string | null;  // For streaming services (Tidal, etc.)
 }
 
 export interface Album {
@@ -79,12 +80,17 @@ export interface Library {
 export interface ScanResult {
     tracks_added: number;
     tracks_updated: number;
+    tracks_deleted: number;
     errors: string[];
 }
 
 // Library commands
 export async function scanMusic(paths: string[]): Promise<ScanResult> {
     return await invoke('scan_music', { paths });
+}
+
+export async function rescanMusic(): Promise<ScanResult> {
+    return await invoke('rescan_music');
 }
 
 export async function getLibrary(): Promise<Library> {

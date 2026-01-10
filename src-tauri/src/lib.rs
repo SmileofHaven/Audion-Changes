@@ -35,6 +35,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // Library commands
             commands::scan_music,
+            commands::rescan_music,
             commands::get_library,
             commands::get_tracks_by_album,
             commands::get_tracks_by_artist,
@@ -53,6 +54,8 @@ pub fn run() {
             commands::load_lrc_file,
             commands::delete_lrc_file,
             commands::musixmatch_request,
+            // Metadata commands
+            commands::download_and_save_audio,
             // Plugin commands
             commands::list_plugins,
             commands::install_plugin,

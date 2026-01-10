@@ -281,5 +281,6 @@
     .album-tracks {
         flex: 1;
         overflow-y: auto;
+        padding-bottom: calc(var(--player-height) + var(--spacing-md));
     }
 </style>

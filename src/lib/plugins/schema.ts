@@ -1,6 +1,7 @@
 // Plugin manifest schema for JS and WASM plugins
 
-export type PluginCategory = 'audio' | 'ui' | 'lyrics' | 'library' | 'utility';
+// Known categories (plugins can use custom categories too)
+export type PluginCategory = 'audio' | 'ui' | 'lyrics' | 'library' | 'utility' | 'appearance' | 'social' | 'sync' | string;
 export type PluginType = 'js' | 'wasm';
 
 export interface AudionPluginManifest {
@@ -66,10 +67,8 @@ export function validateManifest(manifest: unknown): manifest is AudionPluginMan
   if (m.license !== undefined && typeof m.license !== 'string') return false;
   if (m.min_version !== undefined && typeof m.min_version !== 'string') return false;
 
-  if (m.category !== undefined) {
-    const validCategories = ['audio', 'ui', 'lyrics', 'library', 'utility'];
-    if (!validCategories.includes(m.category as string)) return false;
-  }
+  // Category is now flexible - just validate it's a string if provided
+  if (m.category !== undefined && typeof m.category !== 'string') return false;
 
   if (m.ui_slots !== undefined && !Array.isArray(m.ui_slots)) return false;
   if (m.tags !== undefined && !Array.isArray(m.tags)) return false;

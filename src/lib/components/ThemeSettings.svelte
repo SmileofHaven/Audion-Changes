@@ -2,8 +2,14 @@
     import { fade, fly } from "svelte/transition";
     import { isSettingsOpen, toggleSettings } from "$lib/stores/ui";
     import { theme, presetAccents, type ThemeMode } from "$lib/stores/theme";
+    import { appSettings } from "$lib/stores/settings";
+    import { open } from "@tauri-apps/plugin-dialog";
 
     let customColorInput = "#1DB954";
+    let downloadPath = "";
+
+    // Sync download path from store
+    $: downloadPath = $appSettings.downloadLocation || "";
 
     function handleModeChange(mode: ThemeMode) {
         theme.setMode(mode);
@@ -28,6 +34,31 @@
         ) {
             toggleSettings();
         }
+    }
+
+    async function browseDownloadLocation() {
+        try {
+            const selected = await open({
+                directory: true,
+                multiple: false,
+                title: "Select Download Folder",
+            });
+            if (selected) {
+                downloadPath = selected;
+                appSettings.setDownloadLocation(selected);
+            }
+        } catch (err) {
+            console.error("[Settings] Failed to open folder picker:", err);
+        }
+    }
+
+    function handleDownloadPathChange() {
+        appSettings.setDownloadLocation(downloadPath || null);
+    }
+
+    function clearDownloadPath() {
+        downloadPath = "";
+        appSettings.setDownloadLocation(null);
     }
 </script>
 
@@ -218,6 +249,43 @@
                                 Add
                             </button>
                         </div>
+                    </div>
+                </section>
+
+                <!-- Downloads -->
+                <section class="settings-section">
+                    <h3 class="section-title">Downloads</h3>
+
+                    <div class="setting-item">
+                        <span class="setting-label">Save Location</span>
+                        <div class="path-input-container">
+                            <input
+                                type="text"
+                                class="path-input"
+                                placeholder="Default: Browser Downloads"
+                                bind:value={downloadPath}
+                                on:blur={handleDownloadPathChange}
+                            />
+                            <button
+                                class="browse-btn"
+                                on:click={browseDownloadLocation}
+                            >
+                                Browse
+                            </button>
+                            {#if downloadPath}
+                                <button
+                                    class="clear-btn"
+                                    on:click={clearDownloadPath}
+                                    title="Clear"
+                                >
+                                    ✕
+                                </button>
+                            {/if}
+                        </div>
+                        <p class="setting-hint">
+                            Set a folder for Tidal downloads. Leave empty for
+                            browser downloads.
+                        </p>
                     </div>
                 </section>
 
@@ -475,6 +543,71 @@
 
     .add-btn:hover {
         background-color: var(--accent-hover);
+    }
+
+    /* Path Input */
+    .path-input-container {
+        display: flex;
+        gap: var(--spacing-sm);
+        align-items: center;
+    }
+
+    .path-input {
+        flex: 1;
+        padding: var(--spacing-sm) var(--spacing-md);
+        background-color: var(--bg-surface);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-sm);
+        color: var(--text-primary);
+        font-size: 0.875rem;
+    }
+
+    .path-input:focus {
+        outline: none;
+        border-color: var(--accent-primary);
+    }
+
+    .path-input::placeholder {
+        color: var(--text-subdued);
+    }
+
+    .browse-btn {
+        padding: var(--spacing-sm) var(--spacing-md);
+        background-color: var(--bg-highlight);
+        color: var(--text-primary);
+        font-weight: 500;
+        font-size: 0.875rem;
+        border-radius: var(--radius-sm);
+        transition: all var(--transition-fast);
+        white-space: nowrap;
+    }
+
+    .browse-btn:hover {
+        background-color: var(--accent-primary);
+        color: var(--bg-base);
+    }
+
+    .clear-btn {
+        width: 32px;
+        height: 32px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background-color: transparent;
+        color: var(--text-subdued);
+        border-radius: var(--radius-sm);
+        transition: all var(--transition-fast);
+    }
+
+    .clear-btn:hover {
+        color: var(--text-primary);
+        background-color: rgba(255, 255, 255, 0.1);
+    }
+
+    .setting-hint {
+        font-size: 0.75rem;
+        color: var(--text-subdued);
+        margin-top: var(--spacing-xs);
     }
 
     /* About */

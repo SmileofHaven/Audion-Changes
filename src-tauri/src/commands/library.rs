@@ -15,6 +15,7 @@ pub struct ScanProgress {
 pub struct ScanResult {
     pub tracks_added: usize,
     pub tracks_updated: usize,
+    pub tracks_deleted: usize,
     pub errors: Vec<String>,
 }
 
@@ -33,11 +34,18 @@ pub async fn scan_music(
     let mut tracks_added = 0;
     let mut errors = Vec::new();
 
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+
+    // Add folders to database
+    for path in &paths {
+        if let Err(e) = queries::add_music_folder(&conn, path) {
+            errors.push(format!("Failed to add folder {}: {}", path, e));
+        }
+    }
+
     for path in paths {
         let scan_result = scan_directory(&path);
         errors.extend(scan_result.errors);
-
-        let conn = db.conn.lock().map_err(|e| e.to_string())?;
 
         for file_path in scan_result.audio_files {
             if let Some(track_data) = extract_metadata(&file_path) {
@@ -47,11 +55,60 @@ pub async fn scan_music(
                 }
             }
         }
+
+        // Update last scanned time
+        if let Err(e) = queries::update_folder_last_scanned(&conn, &path) {
+            errors.push(format!("Failed to update scan time for {}: {}", path, e));
+        }
     }
 
     Ok(ScanResult {
         tracks_added,
         tracks_updated: 0, // TODO: Distinguish between insert and update
+        tracks_deleted: 0,
+        errors,
+    })
+}
+
+#[tauri::command]
+pub async fn rescan_music(db: State<'_, Database>) -> Result<ScanResult, String> {
+    let mut tracks_added = 0;
+    let mut tracks_deleted = 0;
+    let mut errors = Vec::new();
+
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+
+    // Get all scanned folders
+    let folders = queries::get_music_folders(&conn).map_err(|e| e.to_string())?;
+
+    // Clean up deleted tracks first
+    tracks_deleted = queries::cleanup_deleted_tracks(&conn, &folders)
+        .map_err(|e| format!("Failed to cleanup deleted tracks: {}", e))?;
+
+    // Rescan all folders
+    for path in folders {
+        let scan_result = scan_directory(&path);
+        errors.extend(scan_result.errors);
+
+        for file_path in scan_result.audio_files {
+            if let Some(track_data) = extract_metadata(&file_path) {
+                match queries::insert_or_update_track(&conn, &track_data) {
+                    Ok(_) => tracks_added += 1,
+                    Err(e) => errors.push(format!("Failed to insert {}: {}", file_path, e)),
+                }
+            }
+        }
+
+        // Update last scanned time
+        if let Err(e) = queries::update_folder_last_scanned(&conn, &path) {
+            errors.push(format!("Failed to update scan time for {}: {}", path, e));
+        }
+    }
+
+    Ok(ScanResult {
+        tracks_added,
+        tracks_updated: 0, // TODO: Distinguish between insert and update
+        tracks_deleted,
         errors,
     })
 }

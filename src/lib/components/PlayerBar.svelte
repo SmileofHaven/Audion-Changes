@@ -48,7 +48,10 @@
     $: audioElementRef = audioElement;
 
     // Reactive album art loading
-    $: if ($currentTrack?.album_id) {
+    $: if ($currentTrack?.cover_url) {
+        // Streaming track with direct cover URL (e.g., Tidal)
+        albumArt = $currentTrack.cover_url;
+    } else if ($currentTrack?.album_id) {
         loadAlbumArt($currentTrack.album_id);
     } else {
         albumArt = null;

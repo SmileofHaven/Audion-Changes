@@ -44,6 +44,13 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
         );
 
+        -- Scanned music folders
+        CREATE TABLE IF NOT EXISTS music_folders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT UNIQUE NOT NULL,
+            last_scanned TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+
         -- Create indexes for faster queries
         CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist);
         CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album);

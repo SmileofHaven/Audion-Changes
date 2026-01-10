@@ -124,7 +124,9 @@ pub fn enable_plugin(name: String, plugin_dir: String) -> Result<bool, String> {
         Ok(true)
     } else {
         // Plugin not in state yet, need to add it
-        let plugin_path = PathBuf::from(&plugin_dir).join(&name);
+        // Use safe folder name (matching install logic)
+        let safe_name = name.replace(" ", "-").to_lowercase();
+        let plugin_path = PathBuf::from(&plugin_dir).join(&safe_name);
         if let Some(manifest) = read_plugin_manifest(&plugin_path) {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

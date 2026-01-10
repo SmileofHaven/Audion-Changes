@@ -1,0 +1,22 @@
+{
+    "name": "Tidal Search",
+    "version": "1.0.0",
+    "author": "Audion Team",
+    "description": "Search and browse tracks from the Tidal catalog",
+    "type": "js",
+    "entry": "index.js",
+    "permissions": [
+        "network:fetch",
+        "ui:inject",
+        "player:control",
+        "library:write"
+    ],
+    "category": "library",
+    "tags": [
+        "search",
+        "tidal",
+        "streaming",
+        "music"
+    ],
+    "license": "MIT"
+}

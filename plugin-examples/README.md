@@ -27,6 +27,22 @@ Adds global keyboard shortcuts for playback control.
   - `↑` / `↓` - Volume up/down
   - `M` - Mute
 
+### 4. Theme Customizer
+Transform Audion's look with stunning visual themes.
+- **Type:** JavaScript
+- **Permissions:** `ui:inject`, `storage:local`
+- **Category:** Appearance
+
+### 5. Tidal Search
+Search and browse tracks from the Tidal catalog.
+- **Type:** JavaScript
+- **Permissions:** `network:fetch`, `ui:inject`, `player:control`
+- **Category:** Library
+- **Features:**
+  - Search for tracks and artists
+  - View album art, duration, and quality badges (Hi-Res, Lossless)
+  - Toggle between track and artist search modes
+
 ## Plugin Structure
 
 Each plugin requires:

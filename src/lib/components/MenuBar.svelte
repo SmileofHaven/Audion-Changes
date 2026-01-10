@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { selectMusicFolder, scanMusic } from "$lib/api/tauri";
+    import { selectMusicFolder, scanMusic, rescanMusic } from "$lib/api/tauri";
     import {
         loadLibrary,
         loadPlaylists,
@@ -39,7 +39,17 @@
         closeMenus();
         try {
             isScanning = true;
-            // Reload library to trigger rescan
+            const result = await rescanMusic();
+            
+            if (result.errors.length > 0) {
+                console.warn("Rescan errors:", result.errors);
+            }
+            
+            if (result.tracks_deleted > 0 || result.tracks_added > 0) {
+                console.log(`Rescan complete: ${result.tracks_added} added, ${result.tracks_deleted} deleted`);
+            }
+            
+            // Reload library after rescan
             await loadLibrary();
             await loadPlaylists();
         } catch (error) {

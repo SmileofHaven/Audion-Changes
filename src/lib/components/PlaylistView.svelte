@@ -2,6 +2,11 @@
     import { playlists, loadPlaylists } from "$lib/stores/library";
     import { goToPlaylistDetail } from "$lib/stores/view";
     import { createPlaylist } from "$lib/api/tauri";
+    import { playlistCovers, setPlaylistCover, removePlaylistCover } from "$lib/stores/playlistCovers";
+    import type { Writable } from "svelte/store";
+    
+    // Explicitly type playlistCovers as a Writable<Record<string, string>>
+    const typedPlaylistCovers: Writable<Record<string, string>> = playlistCovers;
 
     let newPlaylistName = "";
     let isCreating = false;
@@ -30,6 +35,36 @@
             showCreateForm = false;
             newPlaylistName = "";
         }
+    }
+
+    function initialsFromName(name: string) {
+        if (!name) return "PL";
+        const parts = name.trim().split(/\s+/);
+        const picked = parts.slice(0, 2).map(p => p[0]?.toUpperCase() ?? '');
+        return (picked.join('') || name.slice(0, 2).toUpperCase());
+    }
+
+    function hashToColor(str: string) {
+        let h = 0;
+        for (let i = 0; i < str.length; i++) h = (h << 5) - h + str.charCodeAt(i);
+        const hue = Math.abs(h) % 360;
+        return `hsl(${hue} 30% 30%)`;
+    }
+
+    function generateSvgCover(name: string, size = 512) {
+        const initials = initialsFromName(name);
+        const bg = hashToColor(name || 'playlist');
+        const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${size}' height='${size}' viewBox='0 0 ${size} ${size}'>` +
+            `<rect width='100%' height='100%' fill='${bg}'/>` +
+            `<text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' font-family='Inter, system-ui, sans-serif' font-size='${Math.floor(size/3)}' fill='white' font-weight='700'>${initials}</text>` +
+            `</svg>`;
+        return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`;
+    }
+
+    function getCoverSrc(playlist: { id: string; name: string }) {
+        const custom = $typedPlaylistCovers && $typedPlaylistCovers[playlist.id];
+        if (custom) return custom;
+        return generateSvgCover(playlist.name || 'Playlist', 512);
     }
 </script>
 
@@ -81,18 +116,9 @@
                 class="playlist-card"
                 on:click={() => goToPlaylistDetail(playlist.id)}
             >
-                <div class="playlist-cover">
-                    <svg
-                        viewBox="0 0 24 24"
-                        fill="currentColor"
-                        width="48"
-                        height="48"
-                    >
-                        <path
-                            d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"
-                        />
-                    </svg>
-                </div>
+                    <div class="playlist-cover">
+                        <img src={getCoverSrc({ id: String(playlist.id), name: playlist.name })} alt="Playlist cover" loading="lazy" decoding="async" />
+                    </div>
                 <div class="playlist-info">
                     <span class="playlist-name truncate">{playlist.name}</span>
                     <span class="playlist-type">Playlist</span>
@@ -163,8 +189,7 @@
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
         gap: var(--spacing-lg);
-        flex: 1;
-        overflow-y: auto;
+        padding: var(--spacing-md);
     }
 
     .playlist-card {
@@ -180,20 +205,21 @@
     }
 
     .playlist-cover {
+        position: relative;
         width: 100%;
         aspect-ratio: 1;
         border-radius: var(--radius-sm);
-        background: linear-gradient(
-            135deg,
-            var(--bg-highlight) 0%,
-            var(--bg-surface) 100%
-        );
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: var(--text-subdued);
+        overflow: hidden;
+        background-color: var(--bg-surface);
         margin-bottom: var(--spacing-md);
         box-shadow: var(--shadow-md);
+    }
+
+    .playlist-cover img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
     }
 
     .playlist-info {
