@@ -56,9 +56,7 @@
         return (
             $currentView.type === viewType ||
             ($currentView.type === "album-detail" && viewType === "albums") ||
-            ($currentView.type === "artist-detail" && viewType === "artists") ||
-            ($currentView.type === "playlist-detail" &&
-                viewType === "playlists")
+            ($currentView.type === "artist-detail" && viewType === "artists")
         );
     }
 
@@ -205,9 +203,12 @@
                     <li>
                         <button
                             class="nav-item playlist-item"
-                            class:active={$currentView.type ===
-                                "playlist-detail" &&
-                                $currentView.id === playlist.id}
+                            class:active={
+                                $currentView.type === "playlist-detail" &&
+                                $currentView.id !== undefined &&
+                                playlist.id !== undefined &&
+                                $currentView.id === playlist.id
+                            }
                             on:click={() => goToPlaylistDetail(playlist.id)}
                         >
                             <svg
