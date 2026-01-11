@@ -10,6 +10,7 @@
         "ui:inject",
         "player:control",
         "library:write",
+        "library:read",
         "settings:write",
         "library:downloadTrack"
     ],

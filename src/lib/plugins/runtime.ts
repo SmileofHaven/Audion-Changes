@@ -18,6 +18,7 @@ import {
   reorderQueue,
   clearUpcoming
 } from '$lib/stores/player';
+import { tracks, playlists, loadLibrary } from '$lib/stores/library';
 import { PluginStorage } from './plugin-storage';
 import { RateLimiter, RATE_LIMITS } from './rate-limiter';
 import type { EventListener } from './event-emitter';
@@ -200,6 +201,10 @@ export class PluginRuntime {
     if (this.hasPermission(pluginName, 'library:read')) {
       api.getTracks = () => this.callHost(pluginName, 'library.getTracks');
       api.getPlaylists = () => this.callHost(pluginName, 'library.getPlaylists');
+    }
+
+    if (this.hasPermission(pluginName, 'library:write')) {
+      api.refreshLibrary = () => this.callHost(pluginName, 'library.refresh');
     }
 
     if (this.hasPermission(pluginName, 'ui:inject')) {
@@ -407,6 +412,15 @@ export class PluginRuntime {
           return savedPath;
         });
 
+      case 'library.refresh':
+        return loadLibrary();
+
+      case 'library.getTracks':
+        return get(tracks);
+
+      case 'library.getPlaylists':
+        return get(playlists);
+
       case 'library.addExternalTrack':
         // args: [trackData: { title, artist, album?, duration?, cover_url?, source_type, external_id, format?, bitrate?, stream_url }]
         const trackData = args[0];
@@ -542,6 +556,13 @@ export class PluginRuntime {
       if (!api.library) api.library = {};
       api.library.downloadTrack = (options: any) => this.callHost(pluginName, 'library.downloadTrack', options);
       api.library.addExternalTrack = (trackData: any) => this.callHost(pluginName, 'library.addExternalTrack', trackData);
+      api.library.refresh = () => this.callHost(pluginName, 'library.refresh');
+    }
+
+    if (this.hasPermission(pluginName, 'library:read')) {
+      if (!api.library) api.library = {};
+      api.library.getTracks = () => this.callHost(pluginName, 'library.getTracks');
+      api.library.getPlaylists = () => this.callHost(pluginName, 'library.getPlaylists');
     }
 
     if (this.hasPermission(pluginName, 'ui:inject')) {

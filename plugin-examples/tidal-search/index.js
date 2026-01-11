@@ -23,22 +23,22 @@
         api: null,
         isOpen: false,
         searchMode: 'track', // 'track' or 'artist'
+        searchMode: 'track', // 'track' or 'artist'
+        searchTimeout: null,
+        currentResults: [],
         searchTimeout: null,
         currentResults: [],
         isPlaying: null, // Currently playing Tidal track ID
-        downloadPath: null, // Custom download path
-        showSettings: false, // Settings panel visibility
+        libraryTracks: new Set(), // Set of external_ids or Tidal IDs already in library
+        hasNewChanges: false, // Track if we've added new songs
+
 
         init(api) {
             console.log('[TidalSearch] Initializing...');
             this.api = api;
 
-            // Load saved download path from settings
-            this.loadDownloadPath();
-            // Try to restore any persisted directory handle (non-blocking)
-            if (typeof indexedDB !== 'undefined') {
-                this.restoreDirectoryHandle().catch(() => { });
-            }
+            // Fetch library tracks to check for duplicates
+            this.fetchLibraryTracks();
 
             // Inject styles
             this.injectStyles();
@@ -79,126 +79,6 @@
             }
 
             console.log('[TidalSearch] Plugin ready!');
-        },
-
-        // Load saved download path from settings or localStorage
-        loadDownloadPath() {
-            try {
-                // Try to get from plugin API settings
-                if (this.api && this.api.settings && typeof this.api.settings.getDownloadLocation === 'function') {
-                    this.downloadPath = this.api.settings.getDownloadLocation();
-                    console.log('[TidalSearch] Loaded download path from API:', this.downloadPath);
-                    return;
-                }
-
-                // Fallback to localStorage
-                const stored = localStorage.getItem('audion_settings');
-                if (stored) {
-                    const settings = JSON.parse(stored);
-                    if (settings.downloadLocation) {
-                        this.downloadPath = settings.downloadLocation;
-                        console.log('[TidalSearch] Loaded download path from localStorage:', this.downloadPath);
-                        return;
-                    }
-                }
-
-                // No saved path found
-                this.downloadPath = null;
-                console.log('[TidalSearch] No saved download path, will use browser downloads');
-            } catch (err) {
-                console.warn('[TidalSearch] Could not load download path:', err);
-                this.downloadPath = null;
-            }
-        },
-
-        // Get download path from native app settings (Tauri)
-        getDownloadPath() {
-            // Try to use Svelte appSettings store if available
-            try {
-                if (window.appSettings && typeof window.appSettings.getDownloadLocation === 'function') {
-                    const path = window.appSettings.getDownloadLocation();
-                    if (path && path.trim() !== "") return path;
-                }
-            } catch (err) {
-                console.warn('[TidalSearch] Could not read native app settings:', err);
-            }
-            // Fallback to Music folder
-            if (window && window.navigator && window.navigator.userAgent.includes('Windows')) {
-                return `${window.process?.env?.USERPROFILE || ''}/Music`;
-            } else if (window && window.navigator && window.navigator.userAgent.includes('Mac')) {
-                return `${window.process?.env?.HOME || ''}/Music`;
-            } else {
-                return `${window.process?.env?.HOME || ''}/Music`;
-            }
-        },
-
-        // Persist and restore directory handles using IndexedDB so user selection
-        // survives across reloads (where supported).
-        async _idbOpen() {
-            return new Promise((resolve, reject) => {
-                const req = indexedDB.open('tidal-search-store', 1);
-                req.onupgradeneeded = () => {
-                    req.result.createObjectStore('state');
-                };
-                req.onsuccess = () => resolve(req.result);
-                req.onerror = () => reject(req.error);
-            });
-        },
-
-        async _idbPut(key, value) {
-            const db = await this._idbOpen();
-            return new Promise((resolve, reject) => {
-                const tx = db.transaction('state', 'readwrite');
-                tx.objectStore('state').put(value, key);
-                tx.oncomplete = () => { db.close(); resolve(); };
-                tx.onerror = () => { db.close(); reject(tx.error); };
-            });
-        },
-
-        async _idbGet(key) {
-            const db = await this._idbOpen();
-            return new Promise((resolve, reject) => {
-                const tx = db.transaction('state', 'readonly');
-                const req = tx.objectStore('state').get(key);
-                req.onsuccess = () => { db.close(); resolve(req.result); };
-                req.onerror = () => { db.close(); reject(req.error); };
-            });
-        },
-
-        async persistDirectoryHandle(handle) {
-            try {
-                if (!handle) return;
-                await this._idbPut('directoryHandle', handle);
-                console.log('[TidalSearch] Persisted directory handle');
-            } catch (err) {
-                console.warn('[TidalSearch] Could not persist directory handle:', err);
-            }
-        },
-
-        async restoreDirectoryHandle() {
-            try {
-                const handle = await this._idbGet('directoryHandle');
-                if (handle) {
-                    this.directoryHandle = handle;
-                    // Only query permission here — requesting permission requires a user gesture
-                    if (typeof handle.queryPermission === 'function') {
-                        const perm = await handle.queryPermission({ mode: 'readwrite' });
-                        if (perm === 'granted') {
-                            console.log('[TidalSearch] Restored directory handle with permission');
-                            return true;
-                        } else {
-                            console.log('[TidalSearch] Restored directory handle but no write permission:', perm);
-                            return false;
-                        }
-                    }
-
-                    // If permission APIs are not available, assume handle is usable
-                    return true;
-                }
-            } catch (err) {
-                console.warn('[TidalSearch] Could not restore directory handle:', err);
-            }
-            return false;
         },
 
         // ═══════════════════════════════════════════════════════════════════════
@@ -768,79 +648,6 @@
                 .tidal-toast.error {
                     background: var(--error-color, #f15e6c);
                 }
-
-                /* Settings */
-                .tidal-settings-btn {
-                    width: 28px;
-                    height: 28px;
-                    border-radius: 50%;
-                    border: none;
-                    background: transparent;
-                    color: var(--text-secondary, #b3b3b3);
-                    cursor: pointer;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    transition: all 0.2s ease;
-                    margin-right: 8px;
-                }
-
-                .tidal-settings-btn:hover {
-                    color: var(--text-primary, #fff);
-                    transform: rotate(45deg);
-                }
-
-                .tidal-settings-row {
-                    display: flex;
-                    align-items: center;
-                    gap: 8px;
-                    padding: 12px;
-                    background: var(--bg-surface, #282828);
-                    border-radius: 8px;
-                    margin-bottom: 12px;
-                }
-
-                .tidal-settings-row.hidden {
-                    display: none;
-                }
-
-                .tidal-settings-label {
-                    font-size: 12px;
-                    color: var(--text-secondary, #b3b3b3);
-                    white-space: nowrap;
-                }
-
-                .tidal-path-input {
-                    flex: 1;
-                    padding: 8px 12px;
-                    border-radius: 6px;
-                    border: 1px solid var(--border-color, #404040);
-                    background: var(--bg-base, #121212);
-                    color: var(--text-primary, #fff);
-                    font-size: 12px;
-                    min-width: 0;
-                }
-
-                .tidal-path-input:disabled {
-                    opacity: 0.7;
-                }
-
-                .tidal-browse-btn {
-                    padding: 8px 12px;
-                    border-radius: 6px;
-                    border: none;
-                    background: var(--accent-primary, #1DB954);
-                    color: #fff;
-                    font-size: 12px;
-                    font-weight: 500;
-                    cursor: pointer;
-                    white-space: nowrap;
-                    transition: all 0.2s ease;
-                }
-
-                .tidal-browse-btn:hover {
-                    background: var(--accent-hover, #1ed760);
-                }
             `;
             document.head.appendChild(style);
         },
@@ -866,6 +673,12 @@
             `;
             document.body.appendChild(progressBar);
 
+            // Create toast container
+            const toastDef = document.createElement('div');
+            toastDef.id = 'tidal-toast';
+            toastDef.className = 'tidal-toast';
+            document.body.appendChild(toastDef);
+
             // Create panel
             const panel = document.createElement('div');
             panel.id = 'tidal-search-panel';
@@ -879,20 +692,7 @@
                         Tidal Search
                         <span class="tidal-badge">TIDAL</span>
                     </h2>
-                    <button class="tidal-settings-btn" title="Settings">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
-                        </svg>
-                    </button>
                     <button class="tidal-close-btn" title="Close">✕</button>
-                </div>
-                <div class="tidal-settings-row hidden" id="tidal-settings-row">
-                    <span class="tidal-settings-label">📁 Save to:</span>
-                    <input type="text" class="tidal-path-input" id="tidal-download-path" placeholder="Leave empty for browser downloads">
-                    <button class="tidal-browse-btn" id="tidal-browse-btn">Browse</button>
-                    <div id="tidal-api-warning" class="tidal-api-warning" style="display:none;margin-top:8px;font-size:12px;color:var(--text-subdued);">
-                        Host integration not available — the host cannot write files directly. Click the button to pick a folder the browser can save to, or run the plugin inside the desktop app for full integration.
-                    </div>
                 </div>
                 <div class="tidal-search-controls">
                     <input type="text" class="tidal-search-input" placeholder="Search for tracks or artists..." autofocus>
@@ -925,32 +725,6 @@
 
             // Event listeners
             panel.querySelector('.tidal-close-btn').onclick = () => this.close();
-            panel.querySelector('.tidal-settings-btn').onclick = () => this.toggleSettings();
-            panel.querySelector('#tidal-browse-btn').onclick = () => this.browseForFolder();
-
-            // Show API warning when host integration is unavailable
-            const apiWarningEl = panel.querySelector('#tidal-api-warning');
-            if (apiWarningEl) {
-                if (!this.api || !this.api.library || typeof this.api.library.downloadTrack !== 'function') {
-                    apiWarningEl.style.display = 'block';
-                } else {
-                    apiWarningEl.style.display = 'none';
-                }
-            }
-
-            // Update path input with saved value or computed default
-            const pathInput = panel.querySelector('#tidal-download-path');
-            if (this.downloadPath) {
-                pathInput.value = this.downloadPath;
-                console.log('[TidalSearch] Set path input to:', this.downloadPath);
-            } else {
-                const defaultPath = this.getDownloadPath() || '';
-                pathInput.value = defaultPath;
-                console.log('[TidalSearch] No download path set, using default:', defaultPath);
-            }
-            // Save path on blur/change
-            pathInput.addEventListener('blur', (e) => this.handlePathChange(e.target.value));
-            pathInput.addEventListener('change', (e) => this.handlePathChange(e.target.value));
 
             const input = panel.querySelector('.tidal-search-input');
             input.addEventListener('input', (e) => this.handleSearch(e.target.value));
@@ -964,116 +738,6 @@
 
             // Prevent panel close when clicking inside
             panel.onclick = (e) => e.stopPropagation();
-        },
-
-        handlePathChange(path) {
-            if (path !== this.downloadPath) {
-                this.downloadPath = path || null;
-                // Prefer using plugin API to update global app setting, fallback to localStorage
-                try {
-                    if (this.api && this.api.settings && typeof this.api.settings.setDownloadLocation === 'function') {
-                        this.api.settings.setDownloadLocation(path || null);
-                    } else {
-                        let settings = {};
-                        const stored = localStorage.getItem('audion_settings');
-                        if (stored) settings = JSON.parse(stored);
-                        settings.downloadLocation = path || null;
-                        localStorage.setItem('audion_settings', JSON.stringify(settings));
-                    }
-                } catch (err) {
-                    console.warn('[TidalSearch] Could not save download path:', err);
-                }
-                if (path) {
-                    this.showToast(`✓ Download path saved`);
-                }
-            }
-        },
-
-        toggleSettings() {
-            this.showSettings = !this.showSettings;
-            const row = document.getElementById('tidal-settings-row');
-            if (row) {
-                row.classList.toggle('hidden', !this.showSettings);
-            }
-        },
-
-        async browseForFolder() {
-            // Since Tauri's dialog plugin requires ES module import which isn't available in plugins,
-            // Prefer native directory picker when available (must be triggered by user click).
-            try {
-                if (typeof window.showDirectoryPicker === 'function') {
-                    // This call is a direct user gesture (browse button click) so should be allowed.
-                    const dirHandle = await window.showDirectoryPicker();
-                    this.directoryHandle = dirHandle;
-                    // Persist handle so it can be reused across restarts
-                    try {
-                        await this.persistDirectoryHandle(dirHandle);
-                    } catch (err) {
-                        console.warn('[TidalSearch] Could not persist directory handle:', err);
-                    }
-
-                    // Try to derive a display path from the handle name for UI only
-                    const displayPath = dirHandle.name || '';
-                    this.downloadPath = displayPath || this.downloadPath;
-
-                    const pathInput = document.getElementById('tidal-download-path');
-                    if (pathInput) pathInput.value = this.downloadPath || '';
-
-                    // Persist selection via plugin API where possible (store the path string)
-                    try {
-                        if (this.api && this.api.settings && typeof this.api.settings.setDownloadLocation === 'function') {
-                            this.api.settings.setDownloadLocation(this.downloadPath || null);
-                        } else {
-                            let settings = {};
-                            const stored = localStorage.getItem('audion_settings');
-                            if (stored) settings = JSON.parse(stored);
-                            settings.downloadLocation = this.downloadPath || null;
-                            localStorage.setItem('audion_settings', JSON.stringify(settings));
-                        }
-                    } catch (err) {
-                        console.warn('[TidalSearch] Could not save download path:', err);
-                    }
-
-                    this.showToast(`✓ Download folder selected`);
-                    return;
-                }
-            } catch (err) {
-                console.warn('[TidalSearch] Directory picker failed:', err);
-            }
-
-            // Fallback to text prompt when directory picker is unavailable
-            const currentPath = this.downloadPath || '';
-            const newPath = prompt(
-                'Enter download folder path:\n\nExample:\nC:\\Users\\YourName\\Music\\Tidal\n/home/user/Music/Tidal',
-                currentPath
-            );
-
-            if (newPath !== null && newPath !== currentPath) {
-                this.downloadPath = newPath || null;
-                const pathInput = document.getElementById('tidal-download-path');
-                if (pathInput) {
-                    pathInput.value = newPath;
-                }
-                // Persist via plugin API where possible
-                try {
-                    if (this.api && this.api.settings && typeof this.api.settings.setDownloadLocation === 'function') {
-                        this.api.settings.setDownloadLocation(newPath || null);
-                    } else {
-                        let settings = {};
-                        const stored = localStorage.getItem('audion_settings');
-                        if (stored) settings = JSON.parse(stored);
-                        settings.downloadLocation = newPath || null;
-                        localStorage.setItem('audion_settings', JSON.stringify(settings));
-                    }
-                } catch (err) {
-                    console.warn('[TidalSearch] Could not save download path:', err);
-                }
-                if (newPath) {
-                    this.showToast(`✓ Download path set:\n${newPath}`);
-                } else {
-                    this.showToast('Using browser downloads folder');
-                }
-            }
         },
 
         createPlayerBarButton() {
@@ -1135,6 +799,9 @@
             setTimeout(() => {
                 document.querySelector('.tidal-search-input')?.focus();
             }, 100);
+
+            // Refresh library tracks cache on open to capture any external changes
+            this.fetchLibraryTracks();
         },
 
         close() {
@@ -1142,6 +809,31 @@
             document.getElementById('tidal-search-overlay')?.classList.remove('open');
             document.getElementById('tidal-search-panel')?.classList.remove('open');
             document.getElementById('tidal-search-playerbar-btn')?.classList.remove('active');
+
+            // Refresh library if we made changes
+            if (this.hasNewChanges) {
+                console.log('[TidalSearch] Refreshing library after changes');
+                this.api?.library?.refresh?.();
+                this.hasNewChanges = false;
+            }
+        },
+
+        async fetchLibraryTracks() {
+            if (this.api?.library?.getTracks) {
+                try {
+                    const tracks = await this.api.library.getTracks();
+                    // Store Tidal IDs (external_id) for fast lookup
+                    // Filter for source_type='tidal' and store their IDs
+                    this.libraryTracks = new Set(
+                        tracks
+                            .filter(t => t.source_type === 'tidal')
+                            .map(t => t.external_id)
+                    );
+                    console.log(`[TidalSearch] Loaded ${this.libraryTracks.size} Tidal tracks from library`);
+                } catch (err) {
+                    console.error('[TidalSearch] Failed to fetch library tracks:', err);
+                }
+            }
         },
 
         // ═══════════════════════════════════════════════════════════════════════
@@ -1301,10 +993,17 @@
             const artistName = track.artist?.name || track.artists?.[0]?.name || 'Unknown Artist';
             const title = track.version ? `${track.title} (${track.version})` : track.title;
             const isPlaying = this.isPlaying === track.id;
+            const isSaved = this.libraryTracks.has(String(track.id));
             const explicitBadge = track.explicit ? '<span class="tidal-explicit-badge">E</span>' : '';
 
+            // Heart icon path (outline vs filled)
+            // Filled heart for saved, Outline for not saved
+            const heartIcon = isSaved
+                ? `<path fill="currentColor" d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>`
+                : `<path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/>`;
+
             return `
-                <div class="tidal-track-item ${isPlaying ? 'playing' : ''}" data-id="${track.id}">
+                <div class="tidal-track-item ${isPlaying ? 'playing' : ''} ${isSaved ? 'saved' : ''}" data-id="${track.id}">
                     <div class="tidal-track-cover-wrapper">
                         <img class="tidal-track-cover" src="${coverUrl}" alt="${this.escapeHtml(track.title)}" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 48 48%22><rect fill=%22%23282828%22 width=%2248%22 height=%2248%22/><text x=%2224%22 y=%2230%22 text-anchor=%22middle%22 fill=%22%23666%22 font-size=%2220%22>🎵</text></svg>'">
                         <div class="tidal-play-overlay">
@@ -1320,11 +1019,9 @@
                     <div class="tidal-track-meta">
                         ${qualityBadge}
                         <span class="tidal-track-duration">${duration}</span>
-                        <button class="tidal-save-btn" data-track-id="${track.id}" title="Save to library">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                                <polyline points="7 10 12 15 17 10"/>
-                                <line x1="12" y1="15" x2="12" y2="3"/>
+                        <button class="tidal-save-btn ${isSaved ? 'saved' : ''}" data-track-id="${track.id}" title="${isSaved ? 'Already in library' : 'Save to library'}" ${isSaved ? 'disabled' : ''}>
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                                ${heartIcon}
                             </svg>
                         </button>
                     </div>
@@ -1550,9 +1247,24 @@
                     // Mark as saved
                     button.classList.remove('saving');
                     button.classList.add('saved');
+                    button.disabled = true;
+                    button.title = 'Saved to library';
+
+                    // Update icon to filled heart
+                    button.innerHTML = `
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                            <path fill="currentColor" d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+                        </svg>
+                    `;
 
                     this.showToast(`✓ Added to library: ${title}`);
                     console.log('[TidalSearch] Track saved:', trackData);
+
+                    // Add to local set so it shows as saved in future searches
+                    this.libraryTracks.add(String(track.id));
+
+                    // Flag that we need a refresh on close
+                    this.hasNewChanges = true;
 
                 } else {
                     throw new Error('Library API not available');
