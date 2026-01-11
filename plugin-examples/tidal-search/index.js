@@ -821,12 +821,19 @@
         async fetchLibraryTracks() {
             if (this.api?.library?.getTracks) {
                 try {
-                    const tracks = await this.api.library.getTracks();
+                    const tracks = (await this.api.library.getTracks()) || [];
+
+                    if (!Array.isArray(tracks)) {
+                        console.warn('[TidalSearch] Library tracks response is not an array:', tracks);
+                        this.libraryTracks = new Set();
+                        return;
+                    }
+
                     // Store Tidal IDs (external_id) for fast lookup
                     // Filter for source_type='tidal' and store their IDs
                     this.libraryTracks = new Set(
                         tracks
-                            .filter(t => t.source_type === 'tidal')
+                            .filter(t => t && t.source_type === 'tidal')
                             .map(t => t.external_id)
                     );
                     console.log(`[TidalSearch] Loaded ${this.libraryTracks.size} Tidal tracks from library`);

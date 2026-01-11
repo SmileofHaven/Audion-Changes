@@ -2,6 +2,7 @@
 import { writable, derived, get } from 'svelte/store';
 import type { Track } from '$lib/api/tauri';
 import { getAudioSrc } from '$lib/api/tauri';
+import { addToast } from '$lib/stores/toast';
 import { EventEmitter, type PluginEvents } from '$lib/plugins/event-emitter';
 
 // Plugin event emitter (global singleton for plugin system)
@@ -134,12 +135,19 @@ export async function playTrack(track: Track): Promise<void> {
                 const runtime = pluginStore.getRuntime();
 
                 if (runtime && track.external_id) {
-                    // Resolve fresh stream URL
-                    const streamUrl = await runtime.resolveStreamUrl(track.source_type, track.external_id);
-                    if (streamUrl) {
-                        src = streamUrl;
-                    } else {
-                        console.error('Failed to resolve stream URL for:', track.source_type, track.external_id);
+                    try {
+                        // Resolve fresh stream URL
+                        const streamUrl = await runtime.resolveStreamUrl(track.source_type, track.external_id);
+                        if (streamUrl) {
+                            src = streamUrl;
+                        } else {
+                            console.error('Failed to resolve stream URL for:', track.source_type, track.external_id);
+                            addToast(`Unable to play "${track.title}": Stream URL not found`, 'error');
+                            return;
+                        }
+                    } catch (err) {
+                        console.error('Plugin resolution error:', err);
+                        addToast(`Error playing "${track.title}": ${err instanceof Error ? err.message : 'Unknown plugin error'}`, 'error');
                         return;
                     }
                 } else if (track.path.startsWith('http://') || track.path.startsWith('https://')) {
@@ -147,21 +155,39 @@ export async function playTrack(track: Track): Promise<void> {
                     src = track.path;
                 } else {
                     console.error('Cannot play external track: no resolver available or path is not a URL');
+                    addToast(`Cannot play "${track.title}": Missing stream information`, 'error');
                     return;
                 }
             } else {
                 // Local file - convert file path to asset URL
-                src = await getAudioSrc(track.path);
+                try {
+                    src = await getAudioSrc(track.path);
+                } catch (err) {
+                    console.error('File access error:', err);
+                    addToast(`Cannot play "${track.title}": File not found or inaccessible`, 'error');
+                    return;
+                }
             }
 
             audioElement.src = src;
-            await audioElement.play();
+            try {
+                await audioElement.play();
+            } catch (err) {
+                // Ignore AbortError - happens when play() is interrupted by new load
+                if (err instanceof Error && err.name === 'AbortError') {
+                    return;
+                }
+                // Handle "NotSupportedError" or similar playback errors
+                console.error('Playback failed:', err);
+                addToast(`Playback failed for "${track.title}": ${err instanceof Error ? err.message : 'Unknown error'}`, 'error');
+            }
         } catch (error) {
-            // Ignore AbortError - happens when play() is interrupted by new load
+            // Catch-all for unexpected errors in the setup phase
             if (error instanceof Error && error.name === 'AbortError') {
                 return;
             }
-            console.error('Failed to play track:', error);
+            console.error('Failed to init track:', error);
+            addToast(`Failed to play "${track.title}": Unexpected error`, 'error');
         }
     }
 }

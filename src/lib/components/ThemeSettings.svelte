@@ -289,6 +289,35 @@
                     </div>
                 </section>
 
+                <!-- Developer -->
+                <section class="settings-section">
+                    <h3 class="section-title">Developer</h3>
+
+                    <div class="setting-item">
+                        <div class="toggle-container">
+                            <div class="toggle-info">
+                                <span class="setting-label">Developer Mode</span
+                                >
+                                <p class="setting-hint">
+                                    Enable browser right-click menu and
+                                    inspection tools
+                                </p>
+                            </div>
+                            <button
+                                class="toggle-btn"
+                                class:active={$appSettings.developerMode}
+                                on:click={() =>
+                                    appSettings.setDeveloperMode(
+                                        !$appSettings.developerMode,
+                                    )}
+                                aria-label="Toggle Developer Mode"
+                            >
+                                <div class="toggle-handle"></div>
+                            </button>
+                        </div>
+                    </div>
+                </section>
+
                 <!-- About -->
                 <section class="settings-section">
                     <h3 class="section-title">About</h3>
@@ -638,5 +667,44 @@
     .copyright {
         font-size: 0.75rem;
         color: var(--text-subdued);
+    }
+
+    /* Toggle Switch */
+    .toggle-container {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .toggle-btn {
+        width: 44px;
+        height: 24px;
+        background-color: var(--bg-highlight);
+        border-radius: 12px;
+        position: relative;
+        cursor: pointer;
+        transition: background-color var(--transition-fast);
+        border: none;
+        padding: 0;
+    }
+
+    .toggle-btn.active {
+        background-color: var(--accent-primary);
+    }
+
+    .toggle-handle {
+        width: 20px;
+        height: 20px;
+        background-color: white;
+        border-radius: 50%;
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        transition: transform var(--transition-fast);
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+    }
+
+    .toggle-btn.active .toggle-handle {
+        transform: translateX(20px);
     }
 </style>

@@ -11,6 +11,7 @@
   import MiniPlayer from "$lib/components/MiniPlayer.svelte";
   import ThemeSettings from "$lib/components/ThemeSettings.svelte";
   import { loadLibrary, loadPlaylists } from "$lib/stores/library";
+  import ToastContainer from "$lib/components/ToastContainer.svelte";
   import { isTauri } from "$lib/api/tauri";
   import {
     initializeFromPersistedState,
@@ -19,10 +20,17 @@
   import { theme } from "$lib/stores/theme";
   import { isMiniPlayer } from "$lib/stores/ui";
   import { pluginStore } from "$lib/stores/plugin-store";
+  import { appSettings } from "$lib/stores/settings";
 
   let isLoading = true;
   let notInTauri = false;
   let audioElement: HTMLAudioElement | null = null;
+
+  function handleContextMenu(e: MouseEvent) {
+    if (!$appSettings.developerMode) {
+      e.preventDefault();
+    }
+  }
 
   onMount(async () => {
     // Initialize theme
@@ -53,6 +61,8 @@
     }
   });
 </script>
+
+<svelte:window on:contextmenu={handleContextMenu} />
 
 <div class="app-container">
   {#if notInTauri}
@@ -138,6 +148,7 @@
     </div>
     <PlayerBar bind:audioElementRef={audioElement} hidden={$isMiniPlayer} />
     <MiniPlayer />
+    <ToastContainer />
   {/if}
 </div>
 

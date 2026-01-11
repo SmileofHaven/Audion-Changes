@@ -4,6 +4,7 @@ import { writable, get } from 'svelte/store';
 export interface AppSettings {
     downloadLocation: string | null;
     autoAddToLibrary: boolean;
+    developerMode: boolean;
 }
 
 const SETTINGS_STORAGE_KEY = 'audion_settings';
@@ -12,6 +13,7 @@ const SETTINGS_STORAGE_KEY = 'audion_settings';
 const defaultSettings: AppSettings = {
     downloadLocation: null,
     autoAddToLibrary: false,
+    developerMode: false,
 };
 
 // Load settings from localStorage
@@ -59,6 +61,14 @@ function createSettingsStore() {
         setAutoAddToLibrary(enabled: boolean) {
             update(state => {
                 const newState = { ...state, autoAddToLibrary: enabled };
+                saveSettings(newState);
+                return newState;
+            });
+        },
+
+        setDeveloperMode(enabled: boolean) {
+            update(state => {
+                const newState = { ...state, developerMode: enabled };
                 saveSettings(newState);
                 return newState;
             });
