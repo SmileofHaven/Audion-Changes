@@ -19,7 +19,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/version-1.1.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows.svg" alt="Platform">
-  <a href="https://discord.gg/audion"><img src="https://img.shields.io/discord/1234567890?color=5865F2&label=Discord&logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://discord.gg/27XRVQsBd9"><img src="https://img.shields.io/discord/1234567890?color=5865F2&label=Discord&logo=discord&logoColor=white" alt="Discord"></a>
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
 </p>
 
