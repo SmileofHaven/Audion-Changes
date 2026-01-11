@@ -38,6 +38,7 @@
     let seekBarElement: HTMLDivElement;
     let volumeBarElement: HTMLDivElement;
     let isSeeking = false;
+    let isVolumeChanging = false;
     let albumArt: string | null = null;
 
     // Slot containers
@@ -82,6 +83,11 @@
         isSeeking = false;
     }
 
+    function handleVolumeStart(e: MouseEvent) {
+        isVolumeChanging = true;
+        handleVolumeChange(e);
+    }
+
     function handleVolumeChange(e: MouseEvent) {
         if (!volumeBarElement) return;
         const rect = volumeBarElement.getBoundingClientRect();
@@ -110,16 +116,15 @@
             setAudioElement(audioElement);
         }
 
-        // Global mouse events for seeking
+        // Global mouse events for seeking and volume
         const handleGlobalMouseMove = (e: MouseEvent) => {
             if (isSeeking) handleSeek(e);
+            if (isVolumeChanging) handleVolumeChange(e);
         };
         const handleGlobalMouseUp = () => {
             isSeeking = false;
+            isVolumeChanging = false;
         };
-
-        window.addEventListener("mousemove", handleGlobalMouseMove);
-        window.addEventListener("mouseup", handleGlobalMouseUp);
 
         window.addEventListener("mousemove", handleGlobalMouseMove);
         window.addEventListener("mouseup", handleGlobalMouseUp);
@@ -373,7 +378,7 @@
         <div
             class="volume-bar"
             bind:this={volumeBarElement}
-            on:click={handleVolumeChange}
+            on:mousedown={handleVolumeStart}
             on:keydown={handleVolumeKey}
             role="slider"
             aria-label="Volume"
