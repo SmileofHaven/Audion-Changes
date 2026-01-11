@@ -328,7 +328,8 @@
         left: 0;
         width: 100%;
         height: 100%;
-        background: rgba(0, 0, 0, 0.5);
+        background: var(--bg-base);
+        opacity: 0.85;
         z-index: -1;
     }
 
@@ -438,7 +439,7 @@
     .progress-bar {
         flex: 1;
         height: 6px;
-        background-color: rgba(255, 255, 255, 0.2);
+        background-color: var(--bg-press);
         border-radius: var(--radius-full);
         cursor: pointer;
         position: relative;
@@ -471,7 +472,7 @@
         width: 64px;
         height: 64px;
         background-color: var(--text-primary);
-        color: black;
+        color: var(--bg-base);
         border-radius: 50%;
         display: flex;
         align-items: center;
@@ -522,7 +523,7 @@
     .lyric-line {
         font-size: 1.75rem;
         font-weight: 700;
-        color: rgba(255, 255, 255, 0.4);
+        color: var(--text-subdued);
         padding: var(--spacing-sm) 0;
         transition: all 0.4s cubic-bezier(0.25, 0.1, 0.25, 1);
         filter: blur(0px);
@@ -532,17 +533,19 @@
 
     /* Distance-based blur effect like Apple Music */
     .lyric-line.near {
-        color: rgba(255, 255, 255, 0.5);
+        color: var(--text-secondary);
         filter: blur(1px);
     }
 
     .lyric-line.mid {
-        color: rgba(255, 255, 255, 0.35);
+        color: var(--text-subdued);
+        opacity: 0.8;
         filter: blur(2px);
     }
 
     .lyric-line.far {
-        color: rgba(255, 255, 255, 0.25);
+        color: var(--text-subdued);
+        opacity: 0.5;
         filter: blur(3px);
     }
 
@@ -553,25 +556,28 @@
     }
 
     .lyric-line.passed.near {
-        color: rgba(255, 255, 255, 0.45);
+        color: var(--text-secondary);
+        opacity: 0.9;
         filter: blur(1.5px);
     }
 
     .lyric-line.passed.mid {
-        color: rgba(255, 255, 255, 0.3);
+        color: var(--text-subdued);
+        opacity: 0.7;
         filter: blur(2.5px);
     }
 
     .lyric-line.passed.far {
-        color: rgba(255, 255, 255, 0.2);
+        color: var(--text-subdued);
+        opacity: 0.4;
         filter: blur(3.5px);
     }
 
     /* Word highlighting - Apple Music style */
     .lyric-word {
         --word-progress: 0%;
-        --highlight-color: #fff;
-        --future-color: rgba(255, 255, 255, 0.35);
+        --highlight-color: var(--text-primary);
+        --future-color: var(--text-subdued);
         display: inline;
         color: transparent;
         background-clip: text;
