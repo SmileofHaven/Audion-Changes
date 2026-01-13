@@ -61,10 +61,11 @@ class LyricsManager {
                 const wordTimings = this.parseWordTimings(text, time);
                 if (wordTimings.length > 0 && wordTimings.some(w => w.time !== time)) {
                     lyricLine.words = wordTimings;
-                    // Clean text from timing tags
-                    lyricLine.text = wordTimings.map(w => w.word).join(' ');
                 }
             }
+
+            // Always use cleanTimestampTags for display text to preserve all content
+            lyricLine.text = this.cleanTimestampTags(text);
 
             lyrics.push(lyricLine);
         }
@@ -113,6 +114,15 @@ class LyricsManager {
         }
 
         return words;
+    }
+
+    /**
+     * Clean timestamp tags from lyrics text for display
+     * Removes patterns like <mm:ss.xx> that may remain in lyrics
+     */
+    private cleanTimestampTags(text: string): string {
+        // Remove <mm:ss.xx> patterns
+        return text.replace(/<\d+:\d+\.\d+>/g, '').replace(/\s+/g, ' ').trim();
     }
 
     /**
