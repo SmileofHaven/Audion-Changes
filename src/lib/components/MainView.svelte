@@ -17,7 +17,7 @@
     import SearchResults from "./SearchResults.svelte";
 
     import PluginManager from "./PluginManager.svelte";
-    import ThemeSettings from "./ThemeSettings.svelte";
+    import Settings from "./Settings.svelte";
 
     let searchInput = "";
     let searchDebounceTimer: ReturnType<typeof setTimeout>;
@@ -148,7 +148,7 @@
         </div>
     {:else if $currentView.type === "settings"}
         <div class="view-container no-padding">
-            <ThemeSettings />
+            <Settings />
         </div>
     {:else}
         <div class="view-container">

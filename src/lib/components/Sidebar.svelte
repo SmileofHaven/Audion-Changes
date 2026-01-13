@@ -26,9 +26,12 @@
     import { loadLibrary } from "$lib/stores/library";
     import { uiSlotManager } from "$lib/plugins/ui-slots";
     import MenuBar from "./MenuBar.svelte";
+    import { updates } from "$lib/stores/updates";
+    import UpdatePopup from "./UpdatePopup.svelte";
 
     let isScanning = false;
     let scanError: string | null = null;
+    let showUpdatePopup = false;
 
     // Slot containers
     let slotTop: HTMLDivElement;
@@ -68,6 +71,7 @@
 
     onMount(() => {
         loadPlaylists();
+        updates.checkUpdate();
 
         // Register UI slots
         if (slotTop) uiSlotManager.registerContainer("sidebar:top", slotTop);
@@ -107,6 +111,19 @@
                 ></path><path d="M38 24H43"></path><path d="M38 18H43"></path>
             </svg>
             <span class="logo-text">Audion</span>
+            {#if $updates.hasUpdate}
+                <div
+                    class="update-badge"
+                    title="View update details"
+                    on:click={() => (showUpdatePopup = true)}
+                    role="button"
+                    tabindex="0"
+                    on:keydown={(e) =>
+                        e.key === "Enter" && (showUpdatePopup = true)}
+                >
+                    Update
+                </div>
+            {/if}
         </div>
     </div>
 
@@ -355,6 +372,13 @@
     </div>
 </aside>
 
+{#if showUpdatePopup && $updates.latestRelease}
+    <UpdatePopup
+        release={$updates.latestRelease}
+        on:close={() => (showUpdatePopup = false)}
+    />
+{/if}
+
 <style>
     .sidebar {
         width: var(--sidebar-width);
@@ -384,6 +408,42 @@
         font-size: 1.5rem;
         font-weight: 700;
         letter-spacing: -0.5px;
+    }
+
+    .update-badge {
+        font-size: 0.6rem;
+        font-weight: 800;
+        color: var(--accent-primary);
+        background-color: var(--accent-subtle);
+        border: 1px solid var(--accent-primary);
+        padding: 1px 8px;
+        border-radius: 12px;
+        margin-left: var(--spacing-sm);
+        cursor: pointer;
+        user-select: none;
+        white-space: nowrap;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-top: 2px;
+        transition: all 0.2s ease;
+        animation: glow 3s infinite ease-in-out;
+    }
+
+    .update-badge:hover {
+        background-color: var(--accent-primary);
+        color: var(--bg-base);
+        transform: translateY(-1px);
+        box-shadow: 0 2px 8px var(--accent-subtle);
+    }
+
+    @keyframes glow {
+        0%,
+        100% {
+            box-shadow: 0 0 2px transparent;
+        }
+        50% {
+            box-shadow: 0 0 8px var(--accent-subtle);
+        }
     }
 
     .sidebar-nav {

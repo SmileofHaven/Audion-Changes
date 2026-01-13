@@ -1,6 +1,6 @@
 {
   "name": "audion",
-  "version": "1.1.0",
+  "version": "1.0.9",
   "description": "",
   "type": "module",
   "scripts": {
@@ -15,7 +15,8 @@
   "dependencies": {
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.4.2",
-    "@tauri-apps/plugin-opener": "^2"
+    "@tauri-apps/plugin-opener": "^2",
+    "marked": "^17.0.1"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.6",
