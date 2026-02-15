@@ -38,6 +38,7 @@
   import { onDestroy, onMount } from "svelte";
   import { multiSelect } from "$lib/stores/multiselect";
   import { isMobile } from "$lib/stores/mobile";
+  import { confirm } from "$lib/stores/dialogs";
 
   export let tracks: Track[] = [];
   export let title: string = "Tracks";
@@ -46,6 +47,7 @@
   export let playbackContext: PlaybackContext | undefined = undefined;
   export let playlistId: number | null = null;
   export let multiSelectMode: boolean = false;
+  export let queueTracks: Track[] | null = null; // New prop for unified queue context
 
   // Virtual scrolling configuration
   const TRACK_ROW_HEIGHT = 56; // pixels (matches min-height in CSS)
@@ -76,11 +78,12 @@
 
   // Mobile view mode: determines layout on small screens
   // 'album' = numbered list, no covers | 'playlist' = covers + info | 'library' = covers + full info
-  $: mobileViewMode = (!showAlbum && playbackContext?.type === 'album')
-      ? 'album'
-      : (playbackContext?.type === 'playlist')
-        ? 'playlist'
-        : 'library';
+  $: mobileViewMode =
+    !showAlbum && playbackContext?.type === "album"
+      ? "album"
+      : playbackContext?.type === "playlist"
+        ? "playlist"
+        : "library";
 
   // 3: Memoize availability check results
   const availabilityCache = new Map<number, boolean>();
@@ -195,7 +198,7 @@
   let trackIndexMap = new Map<number, number>();
   $: {
     trackIndexMap = new Map(
-      sortedTracks.map((track, index) => [track.id, index])
+      sortedTracks.map((track, index) => [track.id, index]),
     );
   }
 
@@ -264,7 +267,7 @@
   onMount(() => {
     // 5: Load playlists once on mount to avoid race conditions
     if ($playlists.length === 0) {
-      loadPlaylists(); 
+      loadPlaylists();
     }
 
     if (containerElement) {
@@ -359,11 +362,11 @@
 
   // Event delegation
   function handleBodyClick(e: MouseEvent) {
-    const row = (e.target as HTMLElement).closest('.track-row');
+    const row = (e.target as HTMLElement).closest(".track-row");
     if (!row) return;
 
-    const trackId = parseInt(row.getAttribute('data-track-id') || '0');
-    
+    const trackId = parseInt(row.getAttribute("data-track-id") || "0");
+
     // In multi-select mode, clicking toggles selection
     if (multiSelectMode) {
       multiSelect.toggleTrack(trackId);
@@ -371,41 +374,60 @@
     }
 
     const trackIndex = trackIndexMap.get(trackId);
-    
+
     if (trackIndex === undefined) return;
-    
+
     const track = sortedTracks[trackIndex];
     if (!track || isTrackUnavailable(track)) return;
+
+    // Use unified queueTracks if available, otherwise fallback to local sortedTracks
+    if (queueTracks) {
+      // Find index of this track in the global/unified queue
+      const globalIndex = queueTracks.findIndex((t) => t.id === trackId);
+      if (globalIndex !== -1) {
+        playTracks(queueTracks, globalIndex, playbackContext);
+        return;
+      }
+    }
 
     playTracks(sortedTracks, trackIndex, playbackContext);
   }
 
   function handleBodyDoubleClick(e: MouseEvent) {
-    const row = (e.target as HTMLElement).closest('.track-row');
+    const row = (e.target as HTMLElement).closest(".track-row");
     if (!row) return;
 
-    const trackId = parseInt(row.getAttribute('data-track-id') || '0');
+    const trackId = parseInt(row.getAttribute("data-track-id") || "0");
     const trackIndex = trackIndexMap.get(trackId);
-    
+
     if (trackIndex === undefined) return;
-    
+
     const track = sortedTracks[trackIndex];
     if (!track || isTrackUnavailable(track)) return;
+
+    // Use unified queueTracks if available
+    if (queueTracks) {
+      const globalIndex = queueTracks.findIndex((t) => t.id === trackId);
+      if (globalIndex !== -1) {
+        playTracks(queueTracks, globalIndex, playbackContext);
+        return;
+      }
+    }
 
     playTracks(sortedTracks, trackIndex, playbackContext);
   }
 
   async function handleBodyContextMenu(e: MouseEvent) {
-    const row = (e.target as HTMLElement).closest('.track-row');
+    const row = (e.target as HTMLElement).closest(".track-row");
     if (!row) return;
 
     e.preventDefault();
 
-    const trackId = parseInt(row.getAttribute('data-track-id') || '0');
+    const trackId = parseInt(row.getAttribute("data-track-id") || "0");
     const trackIndex = trackIndexMap.get(trackId);
-    
+
     if (trackIndex === undefined) return;
-    
+
     const track = sortedTracks[trackIndex];
     if (!track) return;
 
@@ -426,7 +448,19 @@
       {
         label: "Play",
         action: () => {
-          if (trackIndex !== undefined) playTracks(sortedTracks, trackIndex, playbackContext);
+          if (trackIndex !== undefined) {
+            // Use unified queueTracks if available
+            if (queueTracks) {
+              const globalIndex = queueTracks.findIndex(
+                (t) => t.id === trackId,
+              );
+              if (globalIndex !== -1) {
+                playTracks(queueTracks, globalIndex, playbackContext);
+                return;
+              }
+            }
+            playTracks(sortedTracks, trackIndex, playbackContext);
+          }
         },
         disabled: isUnavailable,
       },
@@ -459,7 +493,7 @@
         },
         disabled:
           !canDownload(track) ||
-                    (isUnavailable && !isTidalAvailable && !track.local_src),
+          (isUnavailable && !isTidalAvailable && !track.local_src),
       },
       { type: "separator" },
       {
@@ -495,7 +529,19 @@
       { type: "separator" },
       {
         label: "Delete from Library",
+        danger: true,
         action: async () => {
+          const confirmed = await confirm(
+            `Are you sure you want to delete "${track.title}" from your library? This will also remove the file from your computer.`,
+            {
+              title: "Delete Track",
+              confirmLabel: "Delete",
+              danger: true,
+            },
+          );
+
+          if (!confirmed) return;
+
           try {
             await deleteTrack(track.id);
             // Clear from cache
@@ -620,7 +666,7 @@
     isDragging = false;
     draggedIndex = null;
     dragOverIndex = null;
-    
+
     // Clean up and clear the cleanup function
     if (cleanupDragListeners) {
       cleanupDragListeners();
@@ -642,7 +688,7 @@
   function handleSwipeTouchStart(e: TouchEvent) {
     if (!$isMobile || multiSelectMode) return;
     // Don't swipe on drag handles
-    if ((e.target as HTMLElement).closest('.drag-handle')) return;
+    if ((e.target as HTMLElement).closest(".drag-handle")) return;
 
     const touch = e.touches[0];
     swipeStartX = touch.clientX;
@@ -650,10 +696,10 @@
     swipeDeltaX = 0;
     swipeCommitted = false;
 
-    const row = (e.target as HTMLElement).closest('.track-row') as HTMLElement;
+    const row = (e.target as HTMLElement).closest(".track-row") as HTMLElement;
     if (row) {
       swipingRow = row;
-      swipeTrackId = parseInt(row.getAttribute('data-track-id') || '0');
+      swipeTrackId = parseInt(row.getAttribute("data-track-id") || "0");
     }
   }
 
@@ -666,8 +712,8 @@
 
     // If vertical movement is dominant, cancel swipe (allow scroll)
     if (Math.abs(dy) > Math.abs(dx) && Math.abs(dx) < 15) {
-      swipingRow.style.transform = '';
-      swipingRow.style.transition = '';
+      swipingRow.style.transform = "";
+      swipingRow.style.transition = "";
       swipingRow = null;
       return;
     }
@@ -675,7 +721,7 @@
     // Only right-swipe
     if (dx < 0) {
       swipeDeltaX = 0;
-      swipingRow.style.transform = '';
+      swipingRow.style.transform = "";
       return;
     }
 
@@ -683,14 +729,14 @@
     e.preventDefault();
 
     swipeDeltaX = Math.min(dx, SWIPE_MAX);
-    swipingRow.style.transition = 'none';
+    swipingRow.style.transition = "none";
     swipingRow.style.transform = `translateX(${swipeDeltaX}px)`;
 
     // Visual feedback: change bg when past threshold
     if (swipeDeltaX >= SWIPE_THRESHOLD) {
-      swipingRow.classList.add('swipe-queue-ready');
+      swipingRow.classList.add("swipe-queue-ready");
     } else {
-      swipingRow.classList.remove('swipe-queue-ready');
+      swipingRow.classList.remove("swipe-queue-ready");
     }
   }
 
@@ -702,8 +748,8 @@
 
     if (swipeDeltaX >= SWIPE_THRESHOLD && trackId) {
       swipeCommitted = true;
-      row.classList.add('swipe-queue-added');
-      row.classList.remove('swipe-queue-ready');
+      row.classList.add("swipe-queue-added");
+      row.classList.remove("swipe-queue-ready");
 
       // Find track and add to queue
       const trackIndex = trackIndexMap.get(trackId);
@@ -711,21 +757,21 @@
         const track = sortedTracks[trackIndex];
         if (track) {
           addToQueue([track]);
-          addToast(`Added "${track.title}" to queue`, 'success');
+          addToast(`Added "${track.title}" to queue`, "success");
         }
       }
 
       // Animate back after short delay
       swipeResetTimer = setTimeout(() => {
-        row.style.transition = 'transform 0.25s ease';
-        row.style.transform = '';
-        row.classList.remove('swipe-queue-added');
+        row.style.transition = "transform 0.25s ease";
+        row.style.transform = "";
+        row.classList.remove("swipe-queue-added");
       }, 400);
     } else {
       // Snap back
-      row.style.transition = 'transform 0.25s ease';
-      row.style.transform = '';
-      row.classList.remove('swipe-queue-ready');
+      row.style.transition = "transform 0.25s ease";
+      row.style.transform = "";
+      row.classList.remove("swipe-queue-ready");
     }
 
     swipingRow = null;
@@ -735,19 +781,19 @@
 
   // Helper to handle album click from event delegation
   function handleAlbumClick(e: MouseEvent) {
-    const albumButton = (e.target as HTMLElement).closest('.col-album');
+    const albumButton = (e.target as HTMLElement).closest(".col-album");
     if (!albumButton) return;
 
     e.stopPropagation();
 
-    const row = albumButton.closest('.track-row');
+    const row = albumButton.closest(".track-row");
     if (!row) return;
 
-    const trackId = parseInt(row.getAttribute('data-track-id') || '0');
+    const trackId = parseInt(row.getAttribute("data-track-id") || "0");
     const trackIndex = trackIndexMap.get(trackId);
-    
+
     if (trackIndex === undefined) return;
-    
+
     const track = sortedTracks[trackIndex];
     if (track && track.album_id) {
       goToAlbumDetail(track.album_id);
@@ -769,15 +815,15 @@
           type="checkbox"
           on:change={(e) => {
             if (e.currentTarget.checked) {
-              multiSelect.selectAll(sortedTracks.map(t => t.id));
+              multiSelect.selectAll(sortedTracks.map((t) => t.id));
             } else {
               multiSelect.clearSelections();
             }
           }}
-          checked={$multiSelect.selectedTrackIds.size > 0 && 
-                   $multiSelect.selectedTrackIds.size === sortedTracks.length}
-          indeterminate={$multiSelect.selectedTrackIds.size > 0 && 
-                        $multiSelect.selectedTrackIds.size < sortedTracks.length}
+          checked={$multiSelect.selectedTrackIds.size > 0 &&
+            $multiSelect.selectedTrackIds.size === sortedTracks.length}
+          indeterminate={$multiSelect.selectedTrackIds.size > 0 &&
+            $multiSelect.selectedTrackIds.size < sortedTracks.length}
         />
       </div>
     {/if}
@@ -829,9 +875,9 @@
       class:no-album={!showAlbum}
       class:with-drag={playlistId !== null && !multiSelectMode}
       class:multiselect={multiSelectMode}
-      class:mobile-album={mobileViewMode === 'album'}
-      class:mobile-playlist={mobileViewMode === 'playlist'}
-      class:mobile-library={mobileViewMode === 'library'}
+      class:mobile-album={mobileViewMode === "album"}
+      class:mobile-playlist={mobileViewMode === "playlist"}
+      class:mobile-library={mobileViewMode === "library"}
       on:scroll={handleScroll}
       on:click={handleBodyClick}
       on:dblclick={handleBodyDoubleClick}
@@ -865,17 +911,25 @@
               tabindex="0"
             >
               {#if multiSelectMode}
-                <div 
-                  class="col-checkbox" 
-                  on:click|stopPropagation={() => multiSelect.toggleTrack(track.id)}
+                <div
+                  class="col-checkbox"
+                  on:click|stopPropagation={() =>
+                    multiSelect.toggleTrack(track.id)}
                   role="checkbox"
                   aria-checked={isSelected}
                   tabindex="0"
                 >
                   <div class="custom-checkbox" class:checked={isSelected}>
                     {#if isSelected}
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
-                        <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="currentColor"
+                        width="14"
+                        height="14"
+                      >
+                        <path
+                          d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"
+                        />
                       </svg>
                     {/if}
                   </div>
@@ -1590,8 +1644,13 @@
     }
 
     @keyframes eq-bounce {
-      0%, 100% { height: 20%; }
-      50% { height: 100%; }
+      0%,
+      100% {
+        height: 20%;
+      }
+      50% {
+        height: 100%;
+      }
     }
 
     /* Title in album view — bold, prominent */
@@ -1764,7 +1823,7 @@
 
     /* Green reveal behind the row when swiping right */
     .track-row::before {
-      content: '';
+      content: "";
       position: absolute;
       inset: 0;
       border-radius: var(--radius-md);
@@ -1784,7 +1843,7 @@
 
     /* Queue icon hint that peeks from the left while swiping */
     .track-row::after {
-      content: '+';
+      content: "+";
       position: absolute;
       left: 8px;
       top: 50%;
@@ -1803,7 +1862,7 @@
     }
 
     :global(.track-row.swipe-queue-added)::after {
-      content: '✓';
+      content: "✓";
       opacity: 1;
     }
   }

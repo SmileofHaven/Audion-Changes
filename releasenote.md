@@ -1,9 +1,14 @@
 ## Release Note - 1.1.11
 
 ### Bug Fixes
-- **Logo**: Fixed issue with showing old logo
-- **Audio**: Fixed M4A file handling
-- **Mobile Download**: Fixed download functionality on mobile devices
-- **Mobile Lyrics**: Optimized lyrics UI for mobile
-- **Mobile Toast**: Fixed toast notifications on mobile
+- Fixed download and metadata writing functionality with cover art support.
 
+
+### Features
+- Implemented disc seperation in album detail.
+- Add metaflac to write and read metadata from flac files.
+- Remember queue state, last played track and position.
+- Remember last window position.
+- Add Import Lyrics
+- Drag & Drop music files to import.
+- Add warning when deleting files in drive.

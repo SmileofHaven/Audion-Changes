@@ -2,14 +2,16 @@
 use crate::db::{queries, Database};
 use crate::scanner::{cover_storage, extract_metadata, scan_directory};
 use crate::security;
-use serde::{Deserialize, Serialize};
-use tauri::State;
-use tauri::Emitter;
-use std::time::Instant;
-use crossbeam::channel::{bounded, Sender, Receiver};
+use base64::{engine::general_purpose::STANDARD, Engine};
+use crossbeam::channel::{bounded, Receiver, Sender};
 use rayon::prelude::*;
-use std::sync::Arc;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Instant;
+use tauri::Emitter;
+use tauri::State;
 
 /// Emitted per-batch during progressive rescan so the frontend can render
 /// tracks as they arrive, without waiting for the full scan to complete.
@@ -26,7 +28,7 @@ pub struct ScanProgress {
     pub current_batch: usize,
     pub batch_size: usize,
     pub estimated_time_remaining_ms: u64,
-    pub tracks_added: usize,     
+    pub tracks_added: usize,
     pub tracks_updated: usize,
 }
 
@@ -36,6 +38,162 @@ pub struct ScanResult {
     pub tracks_updated: usize,
     pub tracks_deleted: usize,
     pub errors: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn import_audio_file(
+    file_path: String,
+    overwrite: bool,
+    db: State<'_, Database>,
+) -> Result<queries::Track, String> {
+    // Log received path for debugging
+    eprintln!("[import_audio_file] received path: {}", file_path);
+
+    let path_buf = PathBuf::from(&file_path);
+    let canonical = path_buf.canonicalize().unwrap_or(path_buf.clone());
+    let file_str = canonical.to_string_lossy().to_string();
+
+    // Early existence check to provide clearer errors
+    if !std::path::Path::new(&file_str).exists() {
+        eprintln!("[import_audio_file] file does not exist: {}", file_str);
+        return Err(format!("file_not_found: {}", file_str));
+    }
+
+    let track_data = crate::scanner::extract_metadata(&file_str)
+        .ok_or_else(|| format!("Failed to extract metadata for {}", file_str))?;
+
+    handle_track_import(db, track_data, overwrite).await
+}
+
+#[tauri::command]
+pub async fn import_audio_bytes(
+    filename: String,
+    base64_data: String,
+    overwrite: bool,
+    db: State<'_, Database>,
+) -> Result<queries::Track, String> {
+    // Decode base64 payload
+    let bytes = STANDARD
+        .decode(base64_data.as_bytes())
+        .map_err(|e| format!("Failed to decode base64: {}", e))?;
+
+    // Determine app base dir via cover storage helper
+    let covers_dir = crate::scanner::cover_storage::get_covers_directory()
+        .map_err(|e| format!("Failed to get covers dir: {}", e))?;
+    let base_dir = covers_dir
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| covers_dir.clone());
+
+    // Ensure imports directory
+    let imports_dir = base_dir.join("imports");
+    std::fs::create_dir_all(&imports_dir)
+        .map_err(|e| format!("Failed to create imports dir: {}", e))?;
+
+    let file_path = imports_dir.join(&filename);
+    std::fs::write(&file_path, &bytes)
+        .map_err(|e| format!("Failed to write imported file: {}", e))?;
+
+    let file_path_str = file_path.to_string_lossy().to_string();
+    let track_data = crate::scanner::extract_metadata(&file_path_str)
+        .ok_or_else(|| "Failed to extract metadata".to_string())?;
+
+    handle_track_import(db, track_data, overwrite).await
+}
+
+async fn handle_track_import(
+    db: State<'_, Database>,
+    track_data: queries::TrackInsert,
+    overwrite: bool,
+) -> Result<queries::Track, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+
+    // Check duplicate by content_hash
+    if let Some(ref hash) = track_data.content_hash {
+        let exists: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM tracks WHERE content_hash = ?1",
+                rusqlite::params![hash],
+                |row| row.get(0),
+            )
+            .ok();
+        if exists.is_some() && !overwrite {
+            return Err("duplicate".to_string());
+        }
+    }
+
+    let (track_id, _was_new) = crate::db::queries::insert_or_update_track(&conn, &track_data)
+        .map_err(|e| format!("DB error: {e}"))?;
+
+    if track_id == 0 {
+        return Err("failed_to_insert".to_string());
+    }
+
+    // Save track cover if present
+    let cover_path = if let Some(ref cover_bytes) = track_data.track_cover {
+        match cover_storage::save_track_cover(track_id, cover_bytes) {
+            Ok(p) => {
+                let _ = queries::update_track_cover_path(&conn, track_id, Some(&p));
+                Some(p)
+            }
+            Err(e) => {
+                eprintln!("[Import] Failed to save track cover: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Save album art if present and album doesn't have one
+    let album_id = conn
+        .query_row(
+            "SELECT album_id FROM tracks WHERE id = ?1",
+            [track_id],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .unwrap_or(None);
+
+    if let Some(id) = album_id {
+        if let Some(ref art_bytes) = track_data.album_art {
+            let has_art: bool = conn
+                .query_row(
+                    "SELECT art_path IS NOT NULL FROM albums WHERE id = ?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false);
+
+            if !has_art {
+                if let Ok(p) = cover_storage::save_album_art(id, art_bytes) {
+                    let _ = queries::update_album_art_path(&conn, id, Some(&p));
+                }
+            }
+        }
+    }
+
+    // Return the full track object for the frontend
+    let track = queries::Track {
+        id: track_id,
+        path: track_data.path.clone(),
+        title: track_data.title.clone(),
+        artist: track_data.artist.clone(),
+        album: track_data.album.clone(),
+        track_number: track_data.track_number,
+        duration: track_data.duration,
+        album_id,
+        format: track_data.format.clone(),
+        bitrate: track_data.bitrate,
+        source_type: track_data.source_type.clone(),
+        cover_url: track_data.cover_url.clone(),
+        external_id: track_data.external_id.clone(),
+        local_src: track_data.local_src.clone(),
+        track_cover: None, // Frontend uses track_cover_path via convertFileSrc
+        track_cover_path: cover_path,
+        disc_number: track_data.disc_number,
+    };
+
+    Ok(track)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -56,17 +214,17 @@ fn calculate_batch_size(
     }
 
     let base_size = if tracks_processed < 500 {
-        25 + (tracks_processed / 20)          // 25 → 50
+        25 + (tracks_processed / 20) // 25 → 50
     } else if tracks_processed < 2000 {
-        50 + ((tracks_processed - 500) / 30)  // 50 → 100
+        50 + ((tracks_processed - 500) / 30) // 50 → 100
     } else {
         100 + ((tracks_processed - 2000) / 200).min(50) // 100 → 150
     };
 
     let adjusted = if queue_depth > base_size * 3 {
-        (base_size as f32 * 1.5) as usize   // back-pressure: bigger batches
+        (base_size as f32 * 1.5) as usize // back-pressure: bigger batches
     } else if queue_depth < base_size / 2 {
-        (base_size as f32 * 0.8) as usize   // draining fast: smaller for smoother UI
+        (base_size as f32 * 0.8) as usize // draining fast: smaller for smoother UI
     } else {
         base_size
     };
@@ -103,7 +261,7 @@ pub async fn scan_music(paths: Vec<String>, db: State<'_, Database>) -> Result<S
                             if track_id > 0 {
                                 // Track the operation type
                                 let result = if was_new { 1 } else { 0 };
-                                
+
                                 // Save track cover if present
                                 if let Some(ref cover_bytes) = track_data.track_cover {
                                     let _ = cover_storage::save_track_cover(track_id, cover_bytes)
@@ -115,7 +273,7 @@ pub async fn scan_music(paths: Vec<String>, db: State<'_, Database>) -> Result<S
                                             );
                                         });
                                 }
-                                
+
                                 // Save album art if present and album doesn't have one
                                 if let Some(album_id) = track_data.album.as_ref().and_then(|_| {
                                     conn.query_row(
@@ -136,18 +294,19 @@ pub async fn scan_music(paths: Vec<String>, db: State<'_, Database>) -> Result<S
                                             .unwrap_or(false);
 
                                         if !has_art {
-                                            let _ = cover_storage::save_album_art(album_id, art_bytes)
-                                                .map(|p| {
-                                                    let _ = queries::update_album_art_path(
-                                                        &conn,
-                                                        album_id,
-                                                        Some(&p),
-                                                    );
-                                                });
+                                            let _ =
+                                                cover_storage::save_album_art(album_id, art_bytes)
+                                                    .map(|p| {
+                                                        let _ = queries::update_album_art_path(
+                                                            &conn,
+                                                            album_id,
+                                                            Some(&p),
+                                                        );
+                                                    });
                                         }
                                     }
                                 }
-                                
+
                                 let _ = tx_clone.blocking_send(Ok((result, 0)));
                             }
                         }
@@ -175,11 +334,10 @@ pub async fn scan_music(paths: Vec<String>, db: State<'_, Database>) -> Result<S
 
     // Cleanup after scan
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let tracks_deleted = queries::cleanup_deleted_tracks(&conn, &paths)
-        .unwrap_or_else(|e| {
-            errors.push(format!("Failed to cleanup deleted tracks: {}", e));
-            0
-        });
+    let tracks_deleted = queries::cleanup_deleted_tracks(&conn, &paths).unwrap_or_else(|e| {
+        errors.push(format!("Failed to cleanup deleted tracks: {}", e));
+        0
+    });
     let _ = queries::cleanup_empty_albums(&conn);
 
     Ok(ScanResult {
@@ -194,12 +352,12 @@ pub async fn scan_music(paths: Vec<String>, db: State<'_, Database>) -> Result<S
 #[tauri::command]
 pub async fn add_folder(path: String, db: State<'_, Database>) -> Result<(), String> {
     let path_buf = std::path::PathBuf::from(&path);
-    
+
     // Validate path exists and is a directory
     if !path_buf.exists() {
         return Err("Invalid path: Does not exist".to_string());
     }
-    
+
     if !path_buf.is_dir() {
         return Err("Invalid path: Not a directory".to_string());
     }
@@ -208,13 +366,13 @@ pub async fn add_folder(path: String, db: State<'_, Database>) -> Result<(), Str
     let canonical_path = path_buf
         .canonicalize()
         .map_err(|e| format!("Failed to resolve path: {}", e))?;
-    
+
     let path_str = canonical_path.to_string_lossy().to_string();
 
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     queries::add_music_folder(&conn, &path_str)
         .map_err(|e| format!("Failed to add folder: {}", e))?;
-    
+
     Ok(())
 }
 
@@ -229,13 +387,13 @@ pub async fn rescan_music(
     let (folders, tracks_deleted) = {
         let conn = db.conn.lock().map_err(|e| e.to_string())?;
 
-    // Get all scanned folders
+        // Get all scanned folders
         let folders = queries::get_music_folders(&conn).map_err(|e| e.to_string())?;
 
         let tracks_deleted = queries::cleanup_deleted_tracks(&conn, &folders)
             .map_err(|e| format!("Failed to cleanup deleted tracks: {}", e))?;
 
-    // Clean up empty albums after track cleanup
+        // Clean up empty albums after track cleanup
         let _ = queries::cleanup_empty_albums(&conn);
 
         (folders, tracks_deleted)
@@ -327,22 +485,31 @@ pub async fn rescan_music(
                         }
 
                         // Save track cover
-                        let cover_path = track_data.track_cover.as_ref()
-                            .and_then(|bytes| cover_storage::save_track_cover(track_id, bytes).ok());
+                        let cover_path = track_data.track_cover.as_ref().and_then(|bytes| {
+                            cover_storage::save_track_cover(track_id, bytes).ok()
+                        });
 
                         if let Some(ref path) = cover_path {
-                            if let Err(e) = queries::update_track_cover_path(&tx_db, track_id, Some(path)) {
-                                errors.push(format!("Cover path update failed for track {}: {}", track_id, e));
+                            if let Err(e) =
+                                queries::update_track_cover_path(&tx_db, track_id, Some(path))
+                            {
+                                errors.push(format!(
+                                    "Cover path update failed for track {}: {}",
+                                    track_id, e
+                                ));
                             }
                         }
 
                         // Save album art (only if the album doesn't have one yet)
                         if let Some(album_id) = track_data.album.as_ref().and_then(|_| {
-                            tx_db.query_row(
-                                "SELECT album_id FROM tracks WHERE id = ?1",
-                                [track_id],
-                                |row| row.get::<_, Option<i64>>(0),
-                            ).ok().flatten()
+                            tx_db
+                                .query_row(
+                                    "SELECT album_id FROM tracks WHERE id = ?1",
+                                    [track_id],
+                                    |row| row.get::<_, Option<i64>>(0),
+                                )
+                                .ok()
+                                .flatten()
                         }) {
                             if let Some(ref art_bytes) = track_data.album_art {
                                 let has_art: bool = tx_db
@@ -356,22 +523,35 @@ pub async fn rescan_music(
                                 if !has_art {
                                     match cover_storage::save_album_art(album_id, art_bytes) {
                                         Ok(art_path) => {
-                                            if let Err(e) = queries::update_album_art_path(&tx_db, album_id, Some(&art_path)) {
-                                                errors.push(format!("Art path update failed for album {}: {}", album_id, e));
+                                            if let Err(e) = queries::update_album_art_path(
+                                                &tx_db,
+                                                album_id,
+                                                Some(&art_path),
+                                            ) {
+                                                errors.push(format!(
+                                                    "Art path update failed for album {}: {}",
+                                                    album_id, e
+                                                ));
                                             }
                                         }
-                                        Err(e) => errors.push(format!("Album art save failed for album {}: {}", album_id, e)),
+                                        Err(e) => errors.push(format!(
+                                            "Album art save failed for album {}: {}",
+                                            album_id, e
+                                        )),
                                     }
                                 }
                             }
                         }
 
                         // Build Track struct for frontend
-                        let album_id = tx_db.query_row(
-                            "SELECT album_id FROM tracks WHERE id = ?1",
-                            [track_id],
-                            |row| row.get::<_, Option<i64>>(0),
-                        ).ok().flatten();
+                        let album_id = tx_db
+                            .query_row(
+                                "SELECT album_id FROM tracks WHERE id = ?1",
+                                [track_id],
+                                |row| row.get::<_, Option<i64>>(0),
+                            )
+                            .ok()
+                            .flatten();
 
                         batch_tracks.push(queries::Track {
                             id: track_id,
@@ -390,6 +570,7 @@ pub async fn rescan_music(
                             local_src: track_data.local_src.clone(),
                             track_cover: None,
                             track_cover_path: cover_path,
+                            disc_number: track_data.disc_number,
                         });
                     }
                     Ok(_) => {}
@@ -404,21 +585,28 @@ pub async fn rescan_music(
             batches_sent += 1;
 
             let elapsed_ms = total_start_clone.elapsed().as_millis() as u64;
-            let avg_ms_per_track = if tracks_sent > 0 { elapsed_ms / tracks_sent as u64 } else { 0 };
+            let avg_ms_per_track = if tracks_sent > 0 {
+                elapsed_ms / tracks_sent as u64
+            } else {
+                0
+            };
             let eta_ms = total_files.saturating_sub(tracks_sent) as u64 * avg_ms_per_track;
 
-            let _ = window_clone.emit("scan-batch-ready", ScanBatchEvent {
-                tracks: batch_tracks,
-                progress: ScanProgress {
-                    current: tracks_sent,
-                    total: total_files,
-                    current_batch: batches_sent,
-                    batch_size: pending.len(),
-                    estimated_time_remaining_ms: eta_ms,
-                    tracks_added,
-                    tracks_updated,
+            let _ = window_clone.emit(
+                "scan-batch-ready",
+                ScanBatchEvent {
+                    tracks: batch_tracks,
+                    progress: ScanProgress {
+                        current: tracks_sent,
+                        total: total_files,
+                        current_batch: batches_sent,
+                        batch_size: pending.len(),
+                        estimated_time_remaining_ms: eta_ms,
+                        tracks_added,
+                        tracks_updated,
+                    },
                 },
-            });
+            );
 
             pending.clear();
 
@@ -435,18 +623,23 @@ pub async fn rescan_music(
         }
 
         (tracks_added, tracks_updated, batches_sent, errors)
-    }).await.map_err(|e| e.to_string())?;
+    })
+    .await
+    .map_err(|e| e.to_string())?;
 
     let (tracks_added, tracks_updated, _batches_sent, mut errors) = batch_result;
     errors.extend(scan_errors);
 
     // Emit completion event
-    let _ = window.emit("scan-complete", ScanResult {
-        tracks_added,
-        tracks_updated,
-        tracks_deleted,
-        errors: errors.clone(),
-    });
+    let _ = window.emit(
+        "scan-complete",
+        ScanResult {
+            tracks_added,
+            tracks_updated,
+            tracks_deleted,
+            errors: errors.clone(),
+        },
+    );
 
     // Background orphan cleanup (non-blocking)
     let db_conn_cleanup = Arc::clone(&db.conn);
@@ -488,7 +681,11 @@ pub async fn get_library(db: State<'_, Database>) -> Result<Library, String> {
         }
     });
 
-    Ok(Library { tracks, albums, artists })
+    Ok(Library {
+        tracks,
+        albums,
+        artists,
+    })
 }
 
 #[tauri::command]
@@ -642,7 +839,11 @@ pub async fn delete_album(album_id: i64, db: State<'_, Database>) -> Result<bool
     // Get all tracks for this album to delete files
     let tracks = queries::get_tracks_by_album(&conn, album_id).map_err(|e| e.to_string())?;
 
-    log::info!("[AUDIT] Deleting album {} with {} tracks", album_id, tracks.len());
+    log::info!(
+        "[AUDIT] Deleting album {} with {} tracks",
+        album_id,
+        tracks.len()
+    );
 
     for track in tracks {
         // Only delete file if it's a local track
@@ -664,8 +865,9 @@ pub async fn delete_album(album_id: i64, db: State<'_, Database>) -> Result<bool
     // Delete album art file
     let _ = cover_storage::delete_album_art_file(art_path.as_deref());
 
-    let result = queries::delete_album(&conn, album_id).map_err(|e| format!("Failed to delete album: {}", e))?;
-    
+    let result = queries::delete_album(&conn, album_id)
+        .map_err(|e| format!("Failed to delete album: {}", e))?;
+
     log::info!("[AUDIT] Album {} deleted from library", album_id);
     Ok(result)
 }
@@ -722,6 +924,7 @@ pub async fn add_external_track(
         artist: Some(track.artist),
         album: track.album,
         track_number: None,
+        disc_number: None,
         duration: track.duration,
         album_art: None,   // External tracks use cover_url instead
         track_cover: None, // External tracks use cover_url instead
