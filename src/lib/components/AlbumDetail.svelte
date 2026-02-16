@@ -5,19 +5,49 @@
         getAlbum,
         getTracksByAlbum,
         getAlbumArtSrc,
+        getAlbumCoverSrc,
+        getTrackCoverSrc,
         formatDuration,
     } from "$lib/api/tauri";
     import { playTracks, currentTrack, isPlaying } from "$lib/stores/player";
     import { goToAlbums } from "$lib/stores/view";
+    import { loadLibrary, getAlbumCoverFromTracks } from "$lib/stores/library";
     import TrackList from "./TrackList.svelte";
+    import {
+        downloadTracks,
+        hasDownloadableTracks,
+        needsDownloadLocation,
+        showDownloadResult,
+        type DownloadProgress,
+    } from "$lib/services/downloadService";
+    import { addToast } from "$lib/stores/toast";
+    import { goto } from "$app/navigation";
+    import { confirm } from "$lib/stores/dialogs";
 
     export let albumId: number;
 
     let album: Album | null = null;
     let tracks: Track[] = [];
+    let groupedTracks: { disc: number; tracks: Track[] }[] = [];
     let loading = true;
 
     $: totalDuration = tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
+
+    function groupTracksByDisc(tracks: Track[]) {
+        const groups = new Map<number, Track[]>();
+
+        tracks.forEach((track) => {
+            const disc = track.disc_number || 1;
+            if (!groups.has(disc)) {
+                groups.set(disc, []);
+            }
+            groups.get(disc)?.push(track);
+        });
+
+        return Array.from(groups.entries())
+            .sort((a, b) => a[0] - b[0])
+            .map(([disc, tracks]) => ({ disc, tracks }));
+    }
 
     async function loadAlbumData() {
         loading = true;
@@ -28,6 +58,7 @@
             ]);
             album = albumData;
             tracks = trackData;
+            groupedTracks = groupTracksByDisc(tracks);
         } catch (error) {
             console.error("Failed to load album:", error);
         } finally {
@@ -35,9 +66,94 @@
         }
     }
 
+    // Download state
+    let isDownloading = false;
+    let downloadProgress = "";
+
+    // Check if we have downloadable tracks that are NOT yet downloaded
+    $: downloadableTracks = tracks.filter((t) => {
+        // Must be downloadable (streaming source) AND not have a local_src yet
+        return hasDownloadableTracks([t]) && !t.local_src;
+    });
+
+    $: hasDownloadable = downloadableTracks.length > 0;
+
+    // Check if everything that CAN be downloaded IS downloaded
+    $: allDownloaded =
+        tracks.length > 0 &&
+        tracks.every((t) => {
+            // If it's local, it's downloaded.
+            if (!t.source_type || t.source_type === "local") return true;
+            // If it's streaming, it must have local_src
+            return !!t.local_src;
+        });
+
+    // Check if Tidal plugin is available (for hiding empty albums)
+    import { pluginStore } from "$lib/stores/plugin-store";
+    $: isTidalAvailable = $pluginStore.installed.some(
+        (p) => p.name === "Tidal Search" && p.enabled,
+    );
+    $: shouldShowAlbum = tracks.length > 0 || isTidalAvailable;
+
+    function formatBytes(bytes: number): string {
+        if (bytes === 0) return "0 B";
+        const k = 1024;
+        const sizes = ["B", "KB", "MB", "GB"];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+    }
+
+    async function handleDownloadAll() {
+        if (isDownloading) return;
+
+        if (needsDownloadLocation()) {
+            addToast(
+                "Please configure a download location in Settings first",
+                "error",
+            );
+            // Optionally redirect to settings
+            return;
+        }
+
+        isDownloading = true;
+        downloadProgress = "Starting...";
+
+        try {
+            const result = await downloadTracks(
+                tracks,
+                (progress: DownloadProgress) => {
+                    const current = progress.current;
+                    const total = progress.total;
+
+                    if (progress.bytesTotal) {
+                        const currentMB = formatBytes(
+                            progress.bytesCurrent || 0,
+                        );
+                        const totalMB = formatBytes(progress.bytesTotal);
+                        downloadProgress = `${current}/${total} (${currentMB}/${totalMB})`;
+                    } else {
+                        downloadProgress = `${current}/${total}`;
+                    }
+                },
+            );
+
+            showDownloadResult(result);
+        } catch (error) {
+            console.error("Download failed:", error);
+            addToast("Download failed unexpectedly", "error");
+        } finally {
+            isDownloading = false;
+            downloadProgress = "";
+        }
+    }
+
     function handlePlayAll() {
-        if (tracks.length > 0) {
-            playTracks(tracks, 0);
+        if (tracks.length > 0 && album) {
+            playTracks(tracks, 0, {
+                type: "album",
+                albumId: album.id,
+                displayName: album.name,
+            });
         }
     }
 
@@ -47,6 +163,45 @@
 
     // Reload when albumId changes
     $: albumId, loadAlbumData();
+
+    import { contextMenu } from "$lib/stores/ui";
+    import { deleteAlbum } from "$lib/api/tauri";
+
+    function handleContextMenu(e: MouseEvent) {
+        if (!album) return;
+        e.preventDefault();
+        contextMenu.set({
+            visible: true,
+            x: e.clientX,
+            y: e.clientY,
+            items: [
+                {
+                    label: "Delete Album",
+                    danger: true,
+                    action: async () => {
+                        const confirmed = await confirm(
+                            `Are you sure you want to delete the album "${album!.name}"? This will delete all songs in this album from your computer.`,
+                            {
+                                title: "Delete Album",
+                                confirmLabel: "Delete",
+                                danger: true,
+                            },
+                        );
+
+                        if (!confirmed) return;
+
+                        try {
+                            await deleteAlbum(album!.id);
+                            await loadLibrary(); // Refresh library
+                            goToAlbums(); // Go back to albums list
+                        } catch (error) {
+                            console.error("Failed to delete album:", error);
+                        }
+                    },
+                },
+            ],
+        });
+    }
 </script>
 
 <div class="album-detail">
@@ -55,9 +210,18 @@
             <div class="spinner"></div>
             <span>Loading album...</span>
         </div>
-    {:else if album}
-        <header class="album-header">
-            <button class="back-btn" on:click={goToAlbums}>
+    {:else if album && shouldShowAlbum}
+        <header
+            class="album-header"
+            on:contextmenu={handleContextMenu}
+            role="region"
+            aria-label="Album Header"
+        >
+            <button
+                class="back-btn"
+                on:click={goToAlbums}
+                aria-label="Back to Albums"
+            >
                 <svg
                     viewBox="0 0 24 24"
                     fill="currentColor"
@@ -70,16 +234,9 @@
                 </svg>
             </button>
             <div class="album-cover">
-                {#if album.art_data}
+                {#if getAlbumCoverFromTracks(album.id)}
                     <img
-                        src={getAlbumArtSrc(album.art_data)}
-                        alt={album.name}
-                        decoding="async"
-                    />
-                {:else if tracks.length > 0 && tracks[0].cover_url}
-                    <!-- Fallback: use first track's cover_url (for external tracks) -->
-                    <img
-                        src={tracks[0].cover_url}
+                        src={getAlbumCoverFromTracks(album.id)}
                         alt={album.name}
                         decoding="async"
                     />
@@ -125,13 +282,94 @@
                         </svg>
                         Play
                     </button>
+
+                    {#if hasDownloadable}
+                        <button
+                            class="btn-secondary download-btn"
+                            on:click={handleDownloadAll}
+                            disabled={isDownloading ||
+                                (!hasDownloadable && !allDownloaded) ||
+                                allDownloaded}
+                            class:downloaded={allDownloaded}
+                        >
+                            {#if isDownloading}
+                                <div class="spinner-sm"></div>
+                                <span>{downloadProgress}</span>
+                            {:else if allDownloaded}
+                                <svg
+                                    viewBox="0 0 24 24"
+                                    fill="currentColor"
+                                    width="24"
+                                    height="24"
+                                >
+                                    <path
+                                        d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"
+                                    />
+                                </svg>
+                                <span>Downloaded</span>
+                            {:else}
+                                <svg
+                                    viewBox="0 0 24 24"
+                                    fill="currentColor"
+                                    width="24"
+                                    height="24"
+                                >
+                                    <path
+                                        d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"
+                                    />
+                                </svg>
+                                <span>Download</span>
+                            {/if}
+                        </button>
+                    {/if}
                 </div>
             </div>
         </header>
 
-        <div class="album-tracks">
-            <TrackList {tracks} showAlbum={false} />
-        </div>
+        <section class="track-list-section">
+            {#if groupedTracks.length > 1}
+                {#each groupedTracks as group}
+                    <div class="disc-group">
+                        <div class="disc-header">
+                            <span class="disc-icon">
+                                <svg
+                                    viewBox="0 0 24 24"
+                                    fill="currentColor"
+                                    width="16"
+                                    height="16"
+                                >
+                                    <path
+                                        d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm0-13c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zm0 8c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3z"
+                                    />
+                                </svg>
+                            </span>
+                            <h3>Disc {group.disc}</h3>
+                        </div>
+                        <TrackList
+                            tracks={group.tracks}
+                            showAlbum={false}
+                            playbackContext={{
+                                type: "album",
+                                albumId,
+                                displayName: album?.name,
+                            }}
+                            queueTracks={tracks}
+                        />
+                    </div>
+                {/each}
+            {:else}
+                <TrackList
+                    {tracks}
+                    showAlbum={false}
+                    playbackContext={{
+                        type: "album",
+                        albumId,
+                        displayName: album?.name,
+                    }}
+                    queueTracks={tracks}
+                />
+            {/if}
+        </section>
     {:else}
         <div class="not-found">
             <h2>Album not found</h2>
@@ -285,9 +523,141 @@
         padding: var(--spacing-sm) var(--spacing-xl);
     }
 
-    .album-tracks {
+    .track-list-section {
         flex: 1;
         overflow-y: auto;
-        padding-bottom: calc(var(--player-height) + var(--spacing-md));
+        min-height: 0;
+    }
+
+    .btn-secondary {
+        background-color: transparent;
+        border: 1px solid var(--border-color);
+        color: var(--text-primary);
+        font-weight: 600;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-sm);
+        transition: all var(--transition-fast);
+        padding: var(--spacing-sm) var(--spacing-xl);
+        border-radius: var(--radius-full);
+        font-size: 1rem;
+    }
+
+    .btn-secondary:hover:not(:disabled) {
+        border-color: var(--text-primary);
+        transform: scale(1.05);
+    }
+
+    .btn-secondary.downloaded {
+        border-color: var(--accent-primary);
+        color: var(--accent-primary);
+        cursor: default;
+    }
+
+    .btn-secondary.downloaded:hover {
+        transform: none;
+    }
+
+    .btn-secondary:disabled {
+        opacity: 0.7;
+        cursor: not-allowed;
+    }
+
+    .spinner-sm {
+        width: 16px;
+        height: 16px;
+        border: 2px solid var(--bg-highlight);
+        border-top-color: var(--text-primary);
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+    }
+
+    .disc-group {
+        margin-bottom: var(--spacing-lg);
+    }
+
+    .disc-header {
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-md);
+        padding: var(--spacing-md) var(--spacing-xl);
+        background: transparent;
+        color: var(--text-primary);
+        font-size: 1rem;
+        font-weight: 600;
+        text-transform: none;
+        letter-spacing: normal;
+        border: none;
+        margin-top: var(--spacing-lg);
+        margin-bottom: var(--spacing-xs);
+    }
+
+    .disc-icon {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--text-secondary);
+        width: 24px; /* Align with track number width roughly */
+    }
+
+    .disc-icon {
+        display: flex;
+        align-items: center;
+        opacity: 0.7;
+    }
+
+    .disc-header h3 {
+        margin: 0;
+        font-size: inherit;
+        font-weight: inherit;
+    }
+
+    /* ── Mobile ── */
+    @media (max-width: 768px) {
+        .album-header {
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+            padding: var(--spacing-md);
+            gap: var(--spacing-md);
+        }
+
+        .back-btn {
+            top: var(--spacing-sm);
+            left: var(--spacing-sm);
+        }
+
+        .album-cover {
+            width: 160px;
+            height: 160px;
+        }
+
+        .album-info {
+            align-items: center;
+        }
+
+        .album-title {
+            font-size: 1.5rem;
+            word-break: break-word;
+        }
+
+        .album-meta {
+            flex-wrap: wrap;
+            justify-content: center;
+            margin-bottom: var(--spacing-md);
+        }
+
+        .album-actions {
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .play-all-btn,
+        .btn-secondary {
+            padding: var(--spacing-sm) var(--spacing-lg);
+            font-size: 0.875rem;
+            min-height: 44px;
+        }
     }
 </style>

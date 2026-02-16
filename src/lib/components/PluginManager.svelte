@@ -11,6 +11,8 @@
     PLUGIN_PERMISSIONS,
     getPermissionDescription,
   } from "$lib/plugins/schema";
+  import { addToast } from "$lib/stores/toast";
+  import { confirm } from "$lib/stores/dialogs";
 
   // Local state
   let newCommunityUrl = "";
@@ -29,12 +31,59 @@
     pluginStore.setSearchQuery(searchQuery);
   }
 
+  function normalizeGitHubUrl(url: string): string {
+    // Remove trailing slashes
+    let normalized = url.trim().replace(/\/+$/, "");
+
+    // Remove .git suffix
+    normalized = normalized.replace(/\.git$/, "");
+
+    // Convert blob/main/plugin.json URLs to repo URLs
+    normalized = normalized.replace(/\/blob\/[^/]+\/.*$/, "");
+
+    // Convert to standard github.com format (in case of www or other variations)
+    normalized = normalized.replace(
+      /^https?:\/\/(www\.)?github\.com\//,
+      "https://github.com/",
+    );
+
+    return normalized;
+  }
+
   function handleAddCommunityUrl() {
-    if (newCommunityUrl.trim()) {
-      pluginStore.addCommunityUrl(newCommunityUrl.trim());
-      newCommunityUrl = "";
-      pluginStore.refreshMarketplace();
+    const trimmedUrl = newCommunityUrl.trim();
+
+    if (!trimmedUrl) return;
+
+    // Normalize both the new URL and existing URLs for comparison
+    const normalizedNew = normalizeGitHubUrl(trimmedUrl);
+    const existingNormalized = $pluginStore.communityUrls.map((url) =>
+      normalizeGitHubUrl(url),
+    );
+
+    // Check for duplicate
+    if (existingNormalized.includes(normalizedNew)) {
+      addToast("This plugin repository has already been added", "error");
+      return;
     }
+
+    // Check if already installed
+    if (
+      $pluginStore.installed.some(
+        (p) => normalizeGitHubUrl(p.manifest.repo || "") === normalizedNew,
+      )
+    ) {
+      addToast("This plugin is already installed", "warning");
+      return;
+    }
+
+    pluginStore.addCommunityUrl(trimmedUrl); // Store original URL as entered
+    newCommunityUrl = "";
+    pluginStore.refreshMarketplace();
+  }
+
+  function handleRemoveCommunityUrl(url: string) {
+    pluginStore.removeCommunityUrl(url);
   }
 
   function handleKeyDown(e: KeyboardEvent) {
@@ -44,7 +93,13 @@
   }
 
   async function handleInstallClick(plugin: MarketplacePlugin) {
-    if (plugin.manifest.permissions.length > 0) {
+    // Combine regular permissions and cross-plugin access
+    const hasPermissions = plugin.manifest.permissions.length > 0;
+    const hasCrossPluginAccess =
+      plugin.manifest.cross_plugin_access &&
+      plugin.manifest.cross_plugin_access.length > 0;
+
+    if (hasPermissions || hasCrossPluginAccess) {
       selectedPlugin = plugin;
       pendingPermissions = plugin.manifest.permissions;
       showPermissionModal = true;
@@ -73,7 +128,13 @@
   }
 
   async function handleUninstall(name: string) {
-    if (confirm(`Are you sure you want to uninstall "${name}"?`)) {
+    if (
+      await confirm(`Are you sure you want to uninstall "${name}"?`, {
+        title: "Uninstall Plugin",
+        confirmLabel: "Uninstall",
+        danger: true,
+      })
+    ) {
       await pluginStore.uninstallPlugin(name);
     }
   }
@@ -178,7 +239,7 @@
     <div class="create-form">
       <input
         type="text"
-        placeholder="Enter plugin manifest URL..."
+        placeholder="Enter GitHub repository URL or plugin.json URL..."
         bind:value={newCommunityUrl}
         on:keydown={handleKeyDown}
       />
@@ -227,7 +288,7 @@
             <div class="plugin-info">
               <span class="plugin-name truncate">{plugin.manifest.name}</span>
               <span class="plugin-author truncate"
-                >{plugin.manifest.author}</span
+                >{plugin.manifest.author} · v{plugin.manifest.version}</span
               >
               <span class="plugin-desc truncate"
                 >{plugin.manifest.description || "No description"}</span
@@ -271,6 +332,26 @@
       <div class="plugin-grid">
         {#each $communityPlugins as plugin}
           <div class="plugin-card">
+            <button
+              class="remove-btn"
+              on:click={() => handleRemoveCommunityUrl(plugin.repo)}
+              title="Remove from list"
+              aria-label="Remove plugin"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                width="16"
+                height="16"
+              >
+                <path
+                  d="M18 6L6 18M6 6l12 12"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                />
+              </svg>
+            </button>
             <div class="plugin-icon">
               <svg
                 viewBox="0 0 24 24"
@@ -286,11 +367,17 @@
             <div class="plugin-info">
               <span class="plugin-name truncate">{plugin.manifest.name}</span>
               <span class="plugin-author truncate"
-                >{plugin.manifest.author}</span
+                >{plugin.manifest.author} · v{plugin.manifest.version}</span
               >
               <span class="plugin-desc truncate"
                 >{plugin.manifest.description || "No description"}</span
               >
+              <div class="plugin-badges">
+                <span class="badge">{plugin.manifest.type.toUpperCase()}</span>
+                {#if plugin.manifest.category}
+                  <span class="badge">{plugin.manifest.category}</span>
+                {/if}
+              </div>
             </div>
             <div class="plugin-actions">
               {#if isInstalled(plugin.manifest.name)}
@@ -361,6 +448,26 @@
               >
                 Uninstall
               </button>
+              {#if plugin.manifest.repo}
+                <button
+                  class="btn-secondary"
+                  on:click={async () => {
+                    if (
+                      await confirm(
+                        `Are you sure you want to reinstall "${plugin.name}"?`,
+                        {
+                          title: "Reinstall Plugin",
+                          confirmLabel: "Reinstall",
+                        },
+                      )
+                    ) {
+                      await pluginStore.reinstallPlugin(plugin.name);
+                    }
+                  }}
+                >
+                  Reinstall
+                </button>
+              {/if}
             </div>
           </div>
         {:else}
@@ -390,18 +497,72 @@
     <div class="modal" on:click|stopPropagation role="document">
       <h2>Permission Review</h2>
       <p class="modal-desc">
-        <strong>{selectedPlugin.manifest.name}</strong> requests access to:
+        <strong>{selectedPlugin.manifest.name}</strong> requests the following permissions:
       </p>
-      <div class="permission-list">
-        {#each pendingPermissions as permission}
-          <div class="permission-item">
-            <span class="permission-name">{permission}</span>
-            <span class="permission-desc"
-              >{getPermissionDescription(permission)}</span
-            >
+
+      <!-- Regular Permissions -->
+      {#if pendingPermissions.length > 0}
+        <div class="permission-section">
+          <h3 class="section-title">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+              <path
+                d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"
+              />
+            </svg>
+            System Permissions
+          </h3>
+          <div class="permission-list">
+            {#each pendingPermissions as permission}
+              <div class="permission-item">
+                <span class="permission-name">{permission}</span>
+                <span class="permission-desc"
+                  >{getPermissionDescription(permission)}</span
+                >
+              </div>
+            {/each}
           </div>
-        {/each}
-      </div>
+        </div>
+      {/if}
+
+      <!-- Cross-Plugin Access Permissions -->
+      {#if selectedPlugin.manifest.cross_plugin_access && selectedPlugin.manifest.cross_plugin_access.length > 0}
+        <div class="permission-section">
+          <h3 class="section-title">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+              <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
+            </svg>
+            Plugin Integration
+          </h3>
+          <div class="cross-plugin-list">
+            {#each selectedPlugin.manifest.cross_plugin_access as access}
+              <div class="cross-plugin-item">
+                <div class="cross-plugin-header">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    width="14"
+                    height="14"
+                  >
+                    <path
+                      d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"
+                      stroke-width="2"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                  <span class="target-plugin">{access.plugin}</span>
+                </div>
+                <div class="method-list">
+                  {#each access.methods as method}
+                    <span class="method-badge">{method}</span>
+                  {/each}
+                </div>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
+
       <div class="modal-actions">
         <button class="btn-secondary" on:click={closePermissionModal}>
           Cancel
@@ -419,7 +580,9 @@
     display: flex;
     flex-direction: column;
     height: 100%;
+    min-height: 0;
     padding: var(--spacing-md);
+    overflow: hidden;
   }
 
   .view-header {
@@ -427,6 +590,7 @@
     align-items: center;
     justify-content: space-between;
     margin-bottom: var(--spacing-lg);
+    flex-shrink: 0;
   }
 
   .view-header h1 {
@@ -444,6 +608,7 @@
     border-radius: var(--radius-md);
     color: #ef4444;
     margin-bottom: var(--spacing-md);
+    flex-shrink: 0;
   }
 
   .tabs {
@@ -452,6 +617,7 @@
     margin-bottom: var(--spacing-lg);
     border-bottom: 1px solid var(--border-color);
     padding-bottom: var(--spacing-sm);
+    flex-shrink: 0;
   }
 
   .tab {
@@ -480,6 +646,7 @@
     padding: var(--spacing-md);
     background-color: var(--bg-elevated);
     border-radius: var(--radius-md);
+    flex-shrink: 0;
   }
 
   .create-form input {
@@ -502,8 +669,19 @@
 
   .plugin-content {
     flex: 1;
+    min-height: 0;
     overflow-y: auto;
     padding-bottom: calc(var(--player-height) + var(--spacing-lg));
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: contain;
+  }
+
+  @media (max-width: 768px) {
+    .plugin-content {
+      padding-bottom: calc(
+        var(--mobile-bottom-inset, 130px) + var(--spacing-xl)
+      );
+    }
   }
 
   .plugin-grid {
@@ -520,10 +698,37 @@
     flex-direction: column;
     gap: var(--spacing-md);
     transition: background-color var(--transition-normal);
+    position: relative;
   }
 
   .plugin-card:hover {
     background-color: var(--bg-surface);
+  }
+
+  .plugin-card:hover .remove-btn {
+    opacity: 1;
+  }
+
+  .remove-btn {
+    position: absolute;
+    top: var(--spacing-xs);
+    right: var(--spacing-xs);
+    width: 24px;
+    height: 24px;
+    border-radius: var(--radius-full);
+    background-color: rgba(239, 68, 68, 0.1);
+    color: #ef4444;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: all var(--transition-fast);
+    z-index: 10;
+  }
+
+  .remove-btn:hover {
+    background-color: rgba(239, 68, 68, 0.2);
+    transform: scale(1.1);
   }
 
   .plugin-icon {
@@ -595,6 +800,7 @@
   .plugin-actions {
     display: flex;
     gap: var(--spacing-sm);
+    flex-wrap: wrap;
   }
 
   .btn-primary {
@@ -681,8 +887,11 @@
     background-color: var(--bg-elevated);
     border-radius: var(--radius-lg);
     padding: var(--spacing-lg);
-    max-width: 400px;
+    max-width: 500px;
     width: 90%;
+    max-height: 80vh;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
     border: 1px solid var(--border-color);
   }
 
@@ -695,15 +904,28 @@
   .modal-desc {
     color: var(--text-secondary);
     font-size: 0.875rem;
-    margin-bottom: var(--spacing-md);
+    margin-bottom: var(--spacing-lg);
+  }
+
+  .permission-section {
+    margin-bottom: var(--spacing-lg);
+  }
+
+  .section-title {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: var(--spacing-sm);
   }
 
   .permission-list {
     background-color: var(--bg-surface);
     border-radius: var(--radius-md);
     padding: var(--spacing-sm);
-    margin-bottom: var(--spacing-lg);
-    max-height: 200px;
+    max-height: 150px;
     overflow-y: auto;
   }
 
@@ -730,10 +952,62 @@
     margin-top: 2px;
   }
 
+  /* Cross-Plugin Permissions Styling */
+  .cross-plugin-list {
+    background-color: var(--bg-surface);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-sm);
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+  }
+
+  .cross-plugin-item {
+    background: linear-gradient(
+      135deg,
+      rgba(99, 102, 241, 0.05) 0%,
+      rgba(139, 92, 246, 0.05) 100%
+    );
+    border: 1px solid rgba(99, 102, 241, 0.2);
+    border-radius: var(--radius-sm);
+    padding: var(--spacing-sm);
+  }
+
+  .cross-plugin-header {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    margin-bottom: var(--spacing-xs);
+  }
+
+  .target-plugin {
+    font-weight: 600;
+    font-size: 0.875rem;
+    color: var(--accent-primary);
+  }
+
+  .method-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-xs);
+    padding-left: 22px;
+  }
+
+  .method-badge {
+    padding: 2px 8px;
+    border-radius: var(--radius-sm);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    background-color: rgba(99, 102, 241, 0.15);
+    color: var(--accent-primary);
+    font-family: monospace;
+  }
+
   .modal-actions {
     display: flex;
     gap: var(--spacing-sm);
     justify-content: flex-end;
+    margin-top: var(--spacing-lg);
   }
 
   .animate-spin {
@@ -753,5 +1027,17 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* ── Mobile ── */
+  @media (max-width: 768px) {
+    .plugin-grid {
+      grid-template-columns: 1fr;
+      gap: var(--spacing-md);
+    }
+
+    .remove-btn {
+      opacity: 1;
+    }
   }
 </style>

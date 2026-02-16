@@ -1,6 +1,6 @@
 {
     "name": "Theme Customizer",
-    "version": "1.0.0",
+    "version": "1.0.3",
     "author": "Audion Team",
     "description": "Transform Audion's look with stunning visual themes - from cyberpunk neon to cozy warmth",
     "type": "js",
@@ -17,5 +17,6 @@
         "colors",
         "ui"
     ],
-    "license": "MIT"
+    "license": "MIT",
+    "repository": "https://github.com/dupitydumb/theme-customizer"
 }

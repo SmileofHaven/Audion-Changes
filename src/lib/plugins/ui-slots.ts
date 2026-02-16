@@ -1,7 +1,7 @@
 // UI Slot system for plugins
 // Provides formal extension points in the UI
 
-export type UISlotName = 'playerbar:left' | 'playerbar:right' | 'sidebar:top' | 'sidebar:bottom' | 'playerbar:menu';
+export type UISlotName = 'playerbar:left' | 'playerbar:right' | 'sidebar:top' | 'sidebar:bottom' | 'playerbar:menu' | 'mobile:home' | 'mobile:bottomnav';
 
 export interface UISlotContent {
     pluginName: string;
@@ -19,6 +19,14 @@ export class UISlotManager {
     registerContainer(slotName: UISlotName, container: HTMLElement): void {
         this.containers.set(slotName, container);
 
+        // Ensure shadow root exists for the container
+        if (!container.shadowRoot) {
+            container.attachShadow({ mode: 'open' });
+
+            // Inject a style tag to forward CSS variables
+            this.injectSharedStyles(container.shadowRoot!);
+        }
+
         // Render any pending content
         this.renderSlot(slotName);
     }
@@ -31,9 +39,51 @@ export class UISlotManager {
     }
 
     /**
+     * Slot alias map: content added to a source slot is auto-cloned to target slots.
+     * This provides backward compatibility so plugins registering to 'playerbar:menu'
+     * automatically appear in 'mobile:home' without any plugin code changes.
+     */
+    private static readonly SLOT_MIRRORS: Partial<Record<UISlotName, UISlotName[]>> = {
+        'playerbar:menu': ['mobile:home'],
+    };
+
+    /** Track cloned elements so we can clean them up on removal */
+    private mirrorElements: Map<string, { slot: UISlotName; element: HTMLElement }[]> = new Map();
+
+    /**
      * Add plugin content to a slot
      */
     addContent(slotName: UISlotName, content: UISlotContent): void {
+        this._addToSlot(slotName, content);
+
+        // Auto-mirror: clone content to aliased mobile slots
+        const mirrors = UISlotManager.SLOT_MIRRORS[slotName];
+        if (mirrors) {
+            const key = `${slotName}::${content.pluginName}`;
+            // Remove old mirrors first
+            this._removeMirrors(key);
+            const entries: { slot: UISlotName; element: HTMLElement }[] = [];
+
+            for (const targetSlot of mirrors) {
+                const clonedElement = content.element.cloneNode(true) as HTMLElement;
+                // Copy event listeners by re-dispatching click to original
+                clonedElement.addEventListener('click', () => {
+                    content.element.click();
+                });
+                const mirrorContent: UISlotContent = {
+                    pluginName: content.pluginName,
+                    element: clonedElement,
+                    priority: content.priority,
+                };
+                this._addToSlot(targetSlot, mirrorContent);
+                entries.push({ slot: targetSlot, element: clonedElement });
+            }
+            this.mirrorElements.set(key, entries);
+        }
+    }
+
+    /** Internal: add content to a single slot without triggering mirrors */
+    private _addToSlot(slotName: UISlotName, content: UISlotContent): void {
         if (!this.slots.has(slotName)) {
             this.slots.set(slotName, []);
         }
@@ -43,18 +93,28 @@ export class UISlotManager {
         // Check if plugin already has content in this slot
         const existingIndex = slotContents.findIndex(c => c.pluginName === content.pluginName);
         if (existingIndex >= 0) {
-            // Replace existing content
             slotContents[existingIndex] = content;
         } else {
-            // Add new content
             slotContents.push(content);
         }
 
-        // Sort by priority
         slotContents.sort((a, b) => a.priority - b.priority);
-
-        // Re-render the slot
         this.renderSlot(slotName);
+    }
+
+    /** Remove cloned mirror elements for a given key */
+    private _removeMirrors(key: string): void {
+        const entries = this.mirrorElements.get(key);
+        if (!entries) return;
+        for (const { slot, element } of entries) {
+            const contents = this.slots.get(slot);
+            if (contents) {
+                const filtered = contents.filter(c => c.element !== element);
+                this.slots.set(slot, filtered);
+                this.renderSlot(slot);
+            }
+        }
+        this.mirrorElements.delete(key);
     }
 
     /**
@@ -66,8 +126,11 @@ export class UISlotManager {
 
         const filtered = slotContents.filter(c => c.pluginName !== pluginName);
         this.slots.set(slotName, filtered);
-
         this.renderSlot(slotName);
+
+        // Also remove mirrors
+        const key = `${slotName}::${pluginName}`;
+        this._removeMirrors(key);
     }
 
     /**
@@ -79,6 +142,12 @@ export class UISlotManager {
             this.slots.set(slotName, filtered);
             this.renderSlot(slotName);
         });
+        // Clean up all mirrors for this plugin
+        for (const [key] of this.mirrorElements) {
+            if (key.endsWith(`::${pluginName}`)) {
+                this._removeMirrors(key);
+            }
+        }
     }
 
     /**
@@ -86,17 +155,122 @@ export class UISlotManager {
      */
     private renderSlot(slotName: UISlotName): void {
         const container = this.containers.get(slotName);
-        if (!container) return;
+        if (!container || !container.shadowRoot) return;
 
         const contents = this.slots.get(slotName) || [];
 
-        // Clear existing content
-        container.innerHTML = '';
+        // Clear existing content in shadow root
+        // We keep the style tag (first child)
+        while (container.shadowRoot.childNodes.length > 1) {
+            container.shadowRoot.removeChild(container.shadowRoot.lastChild!);
+        }
 
         // Add all content elements
         contents.forEach(content => {
-            container.appendChild(content.element);
+            container.shadowRoot!.appendChild(content.element);
         });
+    }
+
+    /**
+     * Inject shared styles into shadow root (themes, variables)
+     */
+    private injectSharedStyles(shadow: ShadowRoot): void {
+        const style = document.createElement('style');
+        style.id = 'audion-shared-styles';
+
+        // Forward essential CSS variables for plugins to follow theme
+        style.textContent = `
+            :host {
+                display: flex;
+                flex-direction: column;
+                gap: 2px;
+                --text-primary: var(--text-primary);
+                --text-secondary: var(--text-secondary);
+                --text-subdued: var(--text-subdued);
+                --bg-primary: var(--bg-primary);
+                --bg-surface: var(--bg-surface);
+                --bg-highlight: var(--bg-highlight);
+                --accent-color: var(--accent-color);
+                --border-color: var(--border-color);
+                --radius-sm: var(--radius-sm);
+                --radius-md: var(--radius-md);
+                --spacing-sm: var(--spacing-sm);
+                --spacing-xs: var(--spacing-xs);
+                --transition-fast: var(--transition-fast);
+            }
+            
+            /* Target direct children - premium menu item layout */
+            :host > *:not(style) {
+                width: 100%;
+                box-sizing: border-box;
+                text-align: left;
+                padding: 10px 12px;
+                border-radius: var(--radius-sm);
+                background: transparent;
+                border: none;
+                color: var(--text-secondary);
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                font-size: 0.875rem;
+                font-weight: 500;
+                transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+                font-family: inherit;
+                text-decoration: none;
+                line-height: 1.2;
+                transform: translateX(0);
+            }
+
+            :host > *:not(style):hover {
+                background-color: var(--bg-highlight);
+                color: var(--text-primary);
+                transform: translateX(4px);
+            }
+
+            /* Sleek, constrained icons */
+            svg, img, i {
+                width: 16px !important;
+                height: 16px !important;
+                min-width: 16px !important;
+                min-height: 16px !important;
+                flex-shrink: 0;
+                display: block;
+                object-fit: contain;
+                opacity: 0.8;
+                transition: opacity var(--transition-fast);
+            }
+
+            :host > *:not(style):hover svg,
+            :host > *:not(style):hover img {
+                opacity: 1;
+            }
+
+            /* Reset for images */
+            img {
+                border-radius: 2px;
+            }
+
+            /* Mobile: larger touch targets */
+            @media (max-width: 768px) {
+                :host > *:not(style) {
+                    padding: 14px 12px;
+                    min-height: 44px;
+                    -webkit-tap-highlight-color: transparent;
+                }
+
+                :host > *:not(style):hover {
+                    transform: none;
+                }
+
+                :host > *:not(style):active {
+                    background-color: var(--bg-highlight);
+                    color: var(--text-primary);
+                }
+            }
+        `;
+
+        shadow.appendChild(style);
     }
 
     /**
@@ -111,6 +285,23 @@ export class UISlotManager {
      */
     getContainer(slotName: UISlotName): HTMLElement | undefined {
         return this.containers.get(slotName);
+    }
+
+    /**
+ * Get all slot names that have content
+ */
+    getAllSlots(): UISlotName[] {
+        return Array.from(this.slots.keys());
+    }
+
+    /**
+     * Clear all slots and containers (for complete cleanup)
+     */
+    clearAll(): void {
+        this.slots.clear();
+        this.containers.forEach(container => {
+            container.innerHTML = '';
+        });
     }
 }
 

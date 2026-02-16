@@ -1,6 +1,11 @@
 <script lang="ts">
     import { fly } from "svelte/transition";
-    import { isMiniPlayer, toggleMiniPlayer, toggleFullScreen } from "$lib/stores/ui";
+    import {
+        isMiniPlayer,
+        toggleMiniPlayer,
+        setMiniPlayer,
+        toggleFullScreen,
+    } from "$lib/stores/ui";
     import {
         currentTrack,
         isPlaying,
@@ -12,25 +17,73 @@
         duration,
         seek,
     } from "$lib/stores/player";
-    import { getAlbumArtSrc, getAlbum, formatDuration } from "$lib/api/tauri";
+    import { getAlbumArtSrc, getAlbum, getTrackCoverSrc, getAlbumCoverSrc, formatDuration } from "$lib/api/tauri";
+    import { getCurrentWindow } from "@tauri-apps/api/window";
+    import { isTauri } from "$lib/api/tauri";
 
     let albumArt: string | null = null;
     let progressBarElement: HTMLDivElement;
     let isDragging = false;
+    let isDraggingWindow = false;
+    let dragStartX = 0;
+    let dragStartY = 0;
 
-    // Load album art
-    $: if ($currentTrack?.album_id) {
-        loadAlbumArt($currentTrack.album_id);
+    let imageLoadFailed = false;
+    let loadedAlbum: any = null;
+
+    // Load track cover - with priority order
+    $: if ($currentTrack) {
+        loadTrackCover($currentTrack);
     } else {
         albumArt = null;
+        imageLoadFailed = false;
+        loadedAlbum = null;
+    }
+
+    async function loadTrackCover(track: any) {
+        imageLoadFailed = false;
+        
+        if (track.track_cover_path) {
+            // Priority 1: Track's file-based cover
+            albumArt = getTrackCoverSrc(track);
+        } else if (track.track_cover) {
+            // Priority 2: Track's base64 cover - old
+            albumArt = getAlbumArtSrc(track.track_cover);
+        } else if (track.cover_url) {
+            // Priority 3: Streaming track cover URL
+            albumArt = track.cover_url;
+        } else if (track.album_id) {
+            // Priority 4 & 5: Album art (file-based or base64)
+            await loadAlbumArt(track.album_id);
+        } else {
+            albumArt = null;
+        }
     }
 
     async function loadAlbumArt(albumId: number) {
         try {
             const album = await getAlbum(albumId);
-            albumArt = album ? getAlbumArtSrc(album.art_data) : null;
+            
+            if (!album) {
+                albumArt = null;
+                loadedAlbum = null;
+                return;
+            }
+            
+            loadedAlbum = album;
+            
+            if (album.art_path) {
+                // Priority 4: Album's file-based art
+                albumArt = getAlbumCoverSrc(album);
+            } else if (album.art_data) {
+                // Priority 5: Album's base64 art - old
+                albumArt = getAlbumArtSrc(album.art_data);
+            } else {
+                albumArt = null;
+            }
         } catch {
             albumArt = null;
+            loadedAlbum = null;
         }
     }
 
@@ -54,31 +107,73 @@
         isDragging = false;
     }
 
-    function handleExpand() {
-        toggleMiniPlayer();
+    async function handleExpand() {
+        await toggleMiniPlayer();
     }
 
-    function handleMaximize() {
-        toggleMiniPlayer();
+    async function handleMaximize() {
+        await setMiniPlayer(false);
         toggleFullScreen();
+    }
+
+    // Window dragging for PIP mode
+    async function handleWindowDragStart(e: MouseEvent) {
+        if (isTauri() && $isMiniPlayer) {
+            isDraggingWindow = true;
+            dragStartX = e.screenX;
+            dragStartY = e.screenY;
+        }
+    }
+
+    async function handleWindowDragMove(e: MouseEvent) {
+        if (isDraggingWindow && isTauri()) {
+            try {
+                const appWindow = getCurrentWindow();
+                await appWindow.startDragging();
+                isDraggingWindow = false;
+            } catch (error) {
+                console.error("Failed to drag window:", error);
+            }
+        }
+    }
+
+    function handleWindowDragEnd() {
+        isDraggingWindow = false;
     }
 </script>
 
-<svelte:window
-    on:mousemove={handleMouseMove}
-    on:mouseup={handleMouseUp}
-/>
+<svelte:window on:mousemove={handleMouseMove} on:mouseup={handleMouseUp} />
 
 {#if $isMiniPlayer}
-    <div class="mini-player" transition:fly={{ y: 100, duration: 300 }}>
+    <div
+        class="mini-player"
+        transition:fly={{ y: 100, duration: 300 }}
+        on:mousedown={handleWindowDragStart}
+        on:mousemove={handleWindowDragMove}
+        on:mouseup={handleWindowDragEnd}
+        role="region"
+        aria-label="Mini player"
+    >
         <!-- Album Art with expand -->
         <button class="album-art" on:click={handleExpand} title="Expand player">
-            {#if albumArt}
-                <img src={albumArt} alt="Album art" decoding="async" />
+            {#if albumArt && !imageLoadFailed}
+                <img
+                    src={albumArt}
+                    alt="Album art"
+                    decoding="async"
+                    on:error={() => (imageLoadFailed = true)}
+                />
             {:else}
                 <div class="art-placeholder">
-                    <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24">
-                        <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" />
+                    <svg
+                        viewBox="0 0 24 24"
+                        fill="currentColor"
+                        width="24"
+                        height="24"
+                    >
+                        <path
+                            d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"
+                        />
                     </svg>
                 </div>
             {/if}
@@ -86,36 +181,70 @@
 
         <!-- Track Info -->
         <div class="track-info">
-            <span class="track-title truncate">
+            <span
+                class="track-title truncate"
+                title={$currentTrack?.title || "No track playing"}
+            >
                 {$currentTrack?.title || "No track playing"}
             </span>
-            <span class="track-artist truncate">
+            <span
+                class="track-artist truncate"
+                title={$currentTrack?.artist || ""}
+            >
                 {$currentTrack?.artist || ""}
             </span>
         </div>
 
         <!-- Controls -->
         <div class="controls">
-            <button class="control-btn" on:click={previousTrack} title="Previous">
-                <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+            <button
+                class="control-btn"
+                on:click={previousTrack}
+                title="Previous"
+            >
+                <svg
+                    viewBox="0 0 24 24"
+                    fill="currentColor"
+                    width="16"
+                    height="16"
+                >
                     <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" />
                 </svg>
             </button>
-            
-            <button class="play-btn" on:click={togglePlay} title={$isPlaying ? "Pause" : "Play"}>
+
+            <button
+                class="play-btn"
+                on:click={togglePlay}
+                title={$isPlaying ? "Pause" : "Play"}
+            >
                 {#if $isPlaying}
-                    <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24">
+                    <svg
+                        viewBox="0 0 24 24"
+                        fill="currentColor"
+                        width="18"
+                        height="18"
+                    >
                         <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
                     </svg>
                 {:else}
-                    <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24">
+                    <svg
+                        viewBox="0 0 24 24"
+                        fill="currentColor"
+                        width="18"
+                        height="18"
+                    >
                         <path d="M8 5v14l11-7z" />
                     </svg>
                 {/if}
             </button>
-            
+
             <button class="control-btn" on:click={nextTrack} title="Next">
-                <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+                <svg
+                    viewBox="0 0 24 24"
+                    fill="currentColor"
+                    width="16"
+                    height="16"
+                >
                     <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" />
                 </svg>
             </button>
@@ -129,16 +258,24 @@
         </div>
 
         <!-- Expand button -->
-        <button class="expand-btn" on:click={handleMaximize} title="Full screen">
-            <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18">
-                <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z" />
+        <button
+            class="expand-btn"
+            on:click={handleMaximize}
+            title="Full screen"
+        >
+            <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
+                <path
+                    d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"
+                />
             </svg>
         </button>
 
         <!-- Close mini player -->
-        <button class="close-btn" on:click={toggleMiniPlayer} title="Close mini player">
-            <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18">
-                <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+        <button class="close-btn" on:click={handleExpand} title="Exit PIP mode">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
+                <path
+                    d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"
+                />
             </svg>
         </button>
 
@@ -162,25 +299,33 @@
 <style>
     .mini-player {
         position: fixed;
-        bottom: 20px;
-        right: 20px;
-        width: 380px;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        width: 100%;
+        height: 100%;
         background-color: var(--bg-elevated);
-        border-radius: var(--radius-lg);
-        box-shadow: var(--shadow-lg), 0 0 0 1px var(--border-color);
+        border-radius: 0;
+        box-shadow: none;
         display: flex;
         align-items: center;
-        gap: var(--spacing-sm);
-        padding: var(--spacing-sm);
-        padding-right: var(--spacing-md);
+        gap: var(--spacing-xs);
+        padding: var(--spacing-xs);
+        padding-right: var(--spacing-sm);
         z-index: 1000;
         backdrop-filter: blur(20px);
+        cursor: grab;
+    }
+
+    .mini-player:active {
+        cursor: grabbing;
     }
 
     .album-art {
-        width: 56px;
-        height: 56px;
-        border-radius: var(--radius-md);
+        width: 48px;
+        height: 48px;
+        border-radius: var(--radius-sm);
         overflow: hidden;
         flex-shrink: 0;
         cursor: pointer;
@@ -188,7 +333,7 @@
     }
 
     .album-art:hover {
-        transform: scale(1.05);
+        transform: scale(1.03);
     }
 
     .album-art img {
@@ -215,13 +360,13 @@
     }
 
     .track-title {
-        font-size: 0.875rem;
+        font-size: 0.75rem;
         font-weight: 500;
         color: var(--text-primary);
     }
 
     .track-artist {
-        font-size: 0.75rem;
+        font-size: 0.65rem;
         color: var(--text-secondary);
     }
 
@@ -235,8 +380,8 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        width: 32px;
-        height: 32px;
+        width: 26px;
+        height: 26px;
         border-radius: var(--radius-full);
         color: var(--text-secondary);
         transition: all var(--transition-fast);
@@ -251,8 +396,8 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        width: 36px;
-        height: 36px;
+        width: 30px;
+        height: 30px;
         border-radius: var(--radius-full);
         background-color: var(--text-primary);
         color: var(--bg-base);
@@ -260,12 +405,12 @@
     }
 
     .play-btn:hover {
-        transform: scale(1.08);
+        transform: scale(1.06);
         background-color: var(--accent-hover);
     }
 
     .time-display {
-        font-size: 0.6875rem;
+        font-size: 0.6rem;
         color: var(--text-subdued);
         display: flex;
         align-items: center;
@@ -282,8 +427,8 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        width: 28px;
-        height: 28px;
+        width: 22px;
+        height: 22px;
         border-radius: var(--radius-full);
         color: var(--text-subdued);
         transition: all var(--transition-fast);
@@ -302,7 +447,6 @@
         right: 0;
         height: 4px;
         background-color: var(--bg-highlight);
-        border-radius: 0 0 var(--radius-lg) var(--radius-lg);
         cursor: pointer;
         overflow: hidden;
     }

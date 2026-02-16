@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import "../app.css";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import MainView from "$lib/components/MainView.svelte";
@@ -9,6 +9,8 @@
   import ContextMenu from "$lib/components/ContextMenu.svelte";
   import QueuePanel from "$lib/components/QueuePanel.svelte";
   import MiniPlayer from "$lib/components/MiniPlayer.svelte";
+  import KeyboardShortcuts from "$lib/components/KeyboardShortcuts.svelte";
+  import KeyboardShortcutsHelp from "$lib/components/KeyboardShortcutsHelp.svelte";
 
   import { loadLibrary, loadPlaylists } from "$lib/stores/library";
   import ToastContainer from "$lib/components/ToastContainer.svelte";
@@ -21,6 +23,11 @@
   import { isMiniPlayer } from "$lib/stores/ui";
   import { pluginStore } from "$lib/stores/plugin-store";
   import { appSettings } from "$lib/stores/settings";
+  import { isMobile, mobileSearchOpen } from "$lib/stores/mobile";
+  import MobileBottomNav from "$lib/components/MobileBottomNav.svelte";
+  import { searchQuery, clearSearch } from "$lib/stores/search";
+  import { currentView, goToHome } from "$lib/stores/view";
+  import PluginUpdateDialog from "$lib/components/PluginUpdateDialog.svelte";
 
   let isLoading = true;
   let notInTauri = false;
@@ -32,10 +39,39 @@
     }
   }
 
-  onMount(async () => {
-    // Initialize theme
-    theme.initialize();
+  // Mobile search handling
+  let mobileSearchInput = '';
+  let mobileSearchInputEl: HTMLInputElement;
+  let mobileSearchTimer: ReturnType<typeof setTimeout>;
 
+  function handleMobileSearchInput(e: Event) {
+    const target = e.target as HTMLInputElement;
+    mobileSearchInput = target.value;
+    clearTimeout(mobileSearchTimer);
+    mobileSearchTimer = setTimeout(() => {
+      searchQuery.set(mobileSearchInput);
+    }, 200);
+  }
+
+  function closeMobileSearch() {
+    mobileSearchOpen.set(false);
+    mobileSearchInput = '';
+    clearSearch();
+  }
+
+  // Auto-focus mobile search input when opened
+  $: if ($mobileSearchOpen && mobileSearchInputEl) {
+    tick().then(() => mobileSearchInputEl?.focus());
+  }
+
+  // On mobile, default to home view on first load
+  let mobileInitialized = false;
+  $: if ($isMobile && !mobileInitialized && !isLoading) {
+    mobileInitialized = true;
+    goToHome();
+  }
+
+  onMount(async () => {
     // Initialize persisted state (volume, lyrics visibility, etc.)
     initializeFromPersistedState();
     setupAutoSave();
@@ -48,16 +84,29 @@
     }
 
     try {
-      await Promise.all([
-        loadLibrary(),
-        loadPlaylists(),
-        // Initialize plugins to auto-load enabled ones
-        pluginStore.init(),
-      ]);
+      const dataLoadStart = performance.now();
+      await Promise.all([loadLibrary(), loadPlaylists()]);
     } catch (error) {
       console.error("Failed to load library:", error);
     } finally {
       isLoading = false;
+
+      // Lazy load plugins- reduce startup time
+      requestIdleCallback(() => {
+        const pluginLoadStart = performance.now();
+        console.log("  [PLUGINS] Starting lazy load...");
+
+        pluginStore
+          .init()
+          .then(() => {
+            console.log(
+              `  [PLUGINS] Loaded in background: ${(performance.now() - pluginLoadStart).toFixed(2)}ms`,
+            );
+          })
+          .catch((error) => {
+            console.error("[PLUGINS] Failed to load:", error);
+          });
+      });
     }
   });
 </script>
@@ -68,29 +117,7 @@
   {#if notInTauri}
     <div class="loading-screen">
       <div class="logo">
-        <svg
-          viewBox="0 0 48 48"
-          fill="none"
-          stroke="currentColor"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          stroke-width="4"
-          width="48"
-          height="48"
-        >
-          <path d="M5 42H10"></path><path d="M5 36H10"></path><path d="M5 30H10"
-          ></path><path d="M5 24H10"></path><path d="M16 42H21"></path><path
-            d="M16 36H21"
-          ></path><path d="M16 30H21"></path><path d="M16 24H21"></path><path
-            d="M16 18H21"
-          ></path><path d="M16 12H21"></path><path d="M16 6H21"></path><path
-            d="M27 42H32"
-          ></path><path d="M38 42H43"></path><path d="M27 36H32"></path><path
-            d="M38 36H43"
-          ></path><path d="M27 30H32"></path><path d="M38 30H43"></path><path
-            d="M38 24H43"
-          ></path><path d="M38 18H43"></path>
-        </svg>
+        <img src="/logo.png" alt="Audion Logo" width="48" height="48" />
         <span>Audion</span>
       </div>
       <p
@@ -108,53 +135,56 @@
   {:else if isLoading}
     <div class="loading-screen">
       <div class="logo">
-        <svg
-          viewBox="0 0 48 48"
-          fill="none"
-          stroke="currentColor"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          stroke-width="4"
-          width="48"
-          height="48"
-        >
-          <path d="M5 42H10"></path><path d="M5 36H10"></path><path d="M5 30H10"
-          ></path><path d="M5 24H10"></path><path d="M16 42H21"></path><path
-            d="M16 36H21"
-          ></path><path d="M16 30H21"></path><path d="M16 24H21"></path><path
-            d="M16 18H21"
-          ></path><path d="M16 12H21"></path><path d="M16 6H21"></path><path
-            d="M27 42H32"
-          ></path><path d="M38 42H43"></path><path d="M27 36H32"></path><path
-            d="M38 36H43"
-          ></path><path d="M27 30H32"></path><path d="M38 30H43"></path><path
-            d="M38 24H43"
-          ></path><path d="M38 18H43"></path>
-        </svg>
+        <img src="/logo.png" alt="Audion Logo" width="48" height="48" />
         <span>Audion</span>
       </div>
       <div class="loading-spinner"></div>
       <p>Loading your music library...</p>
     </div>
   {:else}
-    <div class="app-layout">
-      <Sidebar />
-      <MainView />
-      <LyricsPanel />
-      <QueuePanel />
+    {#if $isMobile}
+      <!-- ========= MOBILE LAYOUT (Spotify-like) ========= -->
+      <div class="mobile-layout">
+        <div class="mobile-content">
+          <MainView />
+        </div>
+      </div>
+
+      <!-- PlayerBar always rendered for audio element -->
+      <PlayerBar bind:audioElementRef={audioElement} hidden={$isMiniPlayer} />
+      <MobileBottomNav />
+
       <FullScreenPlayer />
       <ContextMenu />
-    </div>
-    <PlayerBar bind:audioElementRef={audioElement} hidden={$isMiniPlayer} />
-    <MiniPlayer />
+      <QueuePanel />
+      <LyricsPanel />
+    {:else}
+      <!-- ========= DESKTOP LAYOUT ========= -->
+      <div class="app-layout">
+        <Sidebar />
+        <MainView />
+        <LyricsPanel />
+        <QueuePanel />
+        <FullScreenPlayer />
+        <ContextMenu />
+      </div>
+      <PlayerBar bind:audioElementRef={audioElement} hidden={$isMiniPlayer} />
+      <MiniPlayer />
+      <KeyboardShortcuts />
+      <KeyboardShortcutsHelp />
+    {/if}
+
     <ToastContainer />
+    {#if $pluginStore.pendingUpdates.length > 0}
+      <PluginUpdateDialog on:close={() => pluginStore.clearPendingUpdates()} />
+    {/if}
   {/if}
 </div>
 
 <style>
   .app-container {
-    width: 100vw;
-    height: 100vh;
+    width: 100%;
+    height: 100%;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -202,6 +232,23 @@
   .app-layout {
     flex: 1;
     display: flex;
+    overflow: hidden;
+  }
+
+  /* ========= MOBILE LAYOUT ========= */
+  .mobile-layout {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background-color: var(--bg-base);
+  }
+
+  .mobile-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
     overflow: hidden;
   }
 </style>

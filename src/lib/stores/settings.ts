@@ -1,11 +1,14 @@
 // App settings store - manages app-wide settings
 import { writable, get } from 'svelte/store';
+import { invoke } from '@tauri-apps/api/core';
 
 export interface AppSettings {
     downloadLocation: string | null;
     autoAddToLibrary: boolean;
     developerMode: boolean;
     showDiscord: boolean;
+    startMode: 'normal' | 'maximized' | 'minimized';
+    autoplay: boolean;
 }
 
 const SETTINGS_STORAGE_KEY = 'audion_settings';
@@ -16,6 +19,8 @@ const defaultSettings: AppSettings = {
     autoAddToLibrary: false,
     developerMode: false,
     showDiscord: true,
+    startMode: 'normal',
+    autoplay: false,
 };
 
 // Load settings from localStorage
@@ -84,12 +89,39 @@ function createSettingsStore() {
             });
         },
 
+        setAutoplay(enabled: boolean) {
+            update(state => {
+                const newState = { ...state, autoplay: enabled };
+                saveSettings(newState);
+                return newState;
+            });
+        },
+
+
+        async setStartMode(mode: 'normal' | 'maximized' | 'minimized') {
+            try {
+                await invoke('set_window_start_mode', { mode });
+                update(state => ({ ...state, startMode: mode }));
+            } catch (error) {
+                console.error('[Settings] Failed to set start mode:', error);
+            }
+        },
+
         getDownloadLocation(): string | null {
             return get({ subscribe }).downloadLocation;
         },
 
-        initialize() {
+        async initialize() {
             const state = loadSettings();
+
+            // Fetch backend-managed settings
+            try {
+                const startMode = await invoke('get_window_start_mode') as 'normal' | 'maximized' | 'minimized';
+                state.startMode = startMode;
+            } catch (error) {
+                console.error('[Settings] Failed to fetch start mode:', error);
+            }
+
             set(state);
         }
     };

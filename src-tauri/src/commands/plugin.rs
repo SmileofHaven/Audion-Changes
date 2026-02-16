@@ -1,4 +1,5 @@
 // Tauri backend commands for plugin management
+use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -8,6 +9,8 @@ use tauri::Manager;
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PluginManifest {
     pub name: String,
+    #[serde(default)]
+    pub safe_name: Option<String>, // Explicit safe folder name (e.g., "discord-rich-presence")
     pub version: String,
     pub author: String,
     #[serde(default)]
@@ -21,6 +24,8 @@ pub struct PluginManifest {
     pub entry: String,
     #[serde(default)]
     pub permissions: Vec<String>,
+    #[serde(default)]
+    pub cross_plugin_access: Vec<CrossPluginAccess>,
     #[serde(default)]
     pub ui_slots: Option<Vec<String>>,
     #[serde(default)]
@@ -56,8 +61,28 @@ struct PluginStateStore {
     plugins: HashMap<String, PluginState>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CrossPluginAccess {
+    pub plugin: String,
+    pub methods: Vec<String>,
+}
+
+// Helper to convert display name to safe folder name (fallback when safe_name not in manifest)
+fn to_safe_name(name: &str) -> String {
+    name.replace(" ", "-").to_lowercase()
+}
+
+// Get safe name from manifest (prefers explicit safe_name, falls back to conversion)
+fn get_safe_name_from_manifest(manifest: &PluginManifest) -> String {
+    manifest
+        .safe_name
+        .clone()
+        .unwrap_or_else(|| to_safe_name(&manifest.name))
+}
+
 fn get_state_file_path(plugin_dir: &str) -> PathBuf {
-    PathBuf::from(plugin_dir).join("plugin_state.json")
+    let dir = get_plugins_root(plugin_dir);
+    dir.join("plugin_state.json")
 }
 
 fn load_plugin_states(plugin_dir: &str) -> PluginStateStore {
@@ -85,17 +110,79 @@ fn read_plugin_manifest(plugin_path: &PathBuf) -> Option<PluginManifest> {
     }
 }
 
+// Resolve the effective plugins root. On Linux we use XDG config dir (~/.config/<app>/plugins).
+fn get_plugins_root(plugin_dir: &str) -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(mut p) = dirs::config_dir() {
+            p.push(env!("CARGO_PKG_NAME"));
+            p.push("plugins");
+            return p;
+        }
+    }
+    PathBuf::from(plugin_dir)
+}
+
+// Helper to find a plugin's path by its name
+// Tries:
+// 1. Standard safe name
+// 2. Safe name with "-main" suffix
+// 3. Scan all directories for matching manifest name
+fn resolve_plugin_path(plugin_dir: &str, plugin_name: &str) -> Option<(PathBuf, String)> {
+    let dir = get_plugins_root(plugin_dir);
+    let safe_name = to_safe_name(plugin_name);
+
+    // 1. Try exact safe name
+    let path1 = dir.join(&safe_name);
+    if let Some(manifest) = read_plugin_manifest(&path1) {
+        if manifest.name == plugin_name {
+            return Some((path1, safe_name));
+        }
+    }
+
+    // 2. Try safe name + "-main" suffix
+    let suffix_name = format!("{}-main", safe_name);
+    let path2 = dir.join(&suffix_name);
+    if let Some(manifest) = read_plugin_manifest(&path2) {
+        if manifest.name == plugin_name {
+            return Some((path2, suffix_name));
+        }
+    }
+
+    // 3. Scan all subdirectories
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(manifest) = read_plugin_manifest(&path) {
+                    if manifest.name == plugin_name {
+                        let folder_name = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        return Some((path, folder_name));
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 #[tauri::command]
 pub fn list_plugins(plugin_dir: String) -> Vec<PluginInfo> {
     let mut plugins = Vec::new();
-    let dir = PathBuf::from(&plugin_dir);
-    let states = load_plugin_states(&plugin_dir);
+    let dir = get_plugins_root(&plugin_dir);
+    let states = load_plugin_states(dir.to_string_lossy().as_ref());
 
     if let Ok(entries) = fs::read_dir(&dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
                 if let Some(manifest) = read_plugin_manifest(&path) {
+                    // No need to strict validate folder name anymore, just list it.
                     let name = manifest.name.clone();
                     let state = states.plugins.get(&name);
 
@@ -116,11 +203,12 @@ pub fn list_plugins(plugin_dir: String) -> Vec<PluginInfo> {
 
 #[tauri::command]
 pub fn enable_plugin(name: String, plugin_dir: String) -> Result<bool, String> {
-    let mut states = load_plugin_states(&plugin_dir);
+    let plugin_root = get_plugins_root(&plugin_dir);
+    let mut states = load_plugin_states(plugin_root.to_string_lossy().as_ref());
 
-    // Use safe folder name (matching install logic)
-    let safe_name = name.replace(" ", "-").to_lowercase();
-    let plugin_path = PathBuf::from(&plugin_dir).join(&safe_name);
+    // Use resolve_plugin_path to find the real path
+    let (plugin_path, _folder_name) = resolve_plugin_path(&plugin_dir, &name)
+        .ok_or_else(|| format!("Plugin not found: {}", name))?;
 
     // Read manifest to get requested permissions
     let manifest = read_plugin_manifest(&plugin_path);
@@ -137,7 +225,7 @@ pub fn enable_plugin(name: String, plugin_dir: String) -> Result<bool, String> {
             }
         }
 
-        save_plugin_states(&plugin_dir, &states)?;
+        save_plugin_states(plugin_root.to_string_lossy().as_ref(), &states)?;
         Ok(true)
     } else {
         // Plugin not in state yet, need to add it
@@ -161,21 +249,22 @@ pub fn enable_plugin(name: String, plugin_dir: String) -> Result<bool, String> {
                     installed_at: now,
                 },
             );
-            save_plugin_states(&plugin_dir, &states)?;
+            save_plugin_states(plugin_root.to_string_lossy().as_ref(), &states)?;
             Ok(true)
         } else {
-            Err(format!("Plugin not found: {}", name))
+            Err(format!("Plugin manifest not found"))
         }
     }
 }
 
 #[tauri::command]
 pub fn disable_plugin(name: String, plugin_dir: String) -> Result<bool, String> {
-    let mut states = load_plugin_states(&plugin_dir);
+    let plugin_root = get_plugins_root(&plugin_dir);
+    let mut states = load_plugin_states(plugin_root.to_string_lossy().as_ref());
 
     if let Some(state) = states.plugins.get_mut(&name) {
         state.enabled = false;
-        save_plugin_states(&plugin_dir, &states)?;
+        save_plugin_states(plugin_root.to_string_lossy().as_ref(), &states)?;
         Ok(true)
     } else {
         Err(format!("Plugin not tracked: {}", name))
@@ -239,18 +328,25 @@ pub async fn install_plugin(repo_url: String, plugin_dir: String) -> Result<Plug
         ));
     }
 
-    let manifest: PluginManifest = manifest_response
+    let mut manifest: PluginManifest = manifest_response
         .json()
         .await
         .map_err(|e| format!("Failed to parse plugin.json: {}", e))?;
 
-    // Create plugin directory
-    let plugin_name = manifest.name.clone();
-    let safe_name = plugin_name.replace(" ", "-").to_lowercase();
-    let plugin_path = PathBuf::from(&plugin_dir).join(&safe_name);
+    // Inject repo URL into manifest for future update checks
+    manifest.repo = Some(repo_url.clone());
+
+    // Get safe name from manifest (prefers explicit safe_name field)
+    let safe_name = get_safe_name_from_manifest(&manifest);
+    let plugin_root = get_plugins_root(&plugin_dir);
+    let plugin_path = plugin_root.join(&safe_name);
+
+    // When installing new, we enforce the standard naming convention
+    // validate_safe_name(&manifest, &safe_name)?;
+
     fs::create_dir_all(&plugin_path).map_err(|e| format!("Failed to create plugin dir: {}", e))?;
 
-    // Save plugin.json
+    // Save plugin.json (with repo URL included)
     let manifest_json = serde_json::to_string_pretty(&manifest)
         .map_err(|e| format!("Failed to serialize manifest: {}", e))?;
     fs::write(plugin_path.join("plugin.json"), &manifest_json)
@@ -286,7 +382,7 @@ pub async fn install_plugin(repo_url: String, plugin_dir: String) -> Result<Plug
         .map_err(|e| format!("Failed to save entry file: {}", e))?;
 
     // Add to state
-    let mut states = load_plugin_states(&plugin_dir);
+    let mut states = load_plugin_states(plugin_root.to_string_lossy().as_ref());
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -303,7 +399,7 @@ pub async fn install_plugin(repo_url: String, plugin_dir: String) -> Result<Plug
             installed_at: now,
         },
     );
-    save_plugin_states(&plugin_dir, &states)?;
+    save_plugin_states(plugin_root.to_string_lossy().as_ref(), &states)?;
 
     Ok(PluginInfo {
         name: manifest.name.clone(),
@@ -315,28 +411,25 @@ pub async fn install_plugin(repo_url: String, plugin_dir: String) -> Result<Plug
 
 #[tauri::command]
 pub fn uninstall_plugin(name: String, plugin_dir: String) -> Result<bool, String> {
-    // Convert to safe folder name (matching install logic)
-    let safe_name = name.replace(" ", "-").to_lowercase();
-    let plugin_path = PathBuf::from(&plugin_dir).join(&safe_name);
-
-    if !plugin_path.exists() {
-        return Err(format!("Plugin not found: {}", name));
-    }
+    // Resolve path using our robust helper
+    let (plugin_path, _) = resolve_plugin_path(&plugin_dir, &name)
+        .ok_or_else(|| format!("Plugin not found: {}", name))?;
 
     // Remove plugin directory
     fs::remove_dir_all(&plugin_path).map_err(|e| format!("Failed to remove plugin: {}", e))?;
 
     // Remove from state (using original name as key)
-    let mut states = load_plugin_states(&plugin_dir);
+    let plugin_root = get_plugins_root(&plugin_dir);
+    let mut states = load_plugin_states(plugin_root.to_string_lossy().as_ref());
     states.plugins.remove(&name);
-    save_plugin_states(&plugin_dir, &states)?;
+    save_plugin_states(plugin_root.to_string_lossy().as_ref(), &states)?;
 
     Ok(true)
 }
 
 #[tauri::command]
 pub fn get_plugin_permissions(name: String, plugin_dir: String) -> Option<Vec<String>> {
-    let plugin_path = PathBuf::from(plugin_dir).join(&name);
+    let (plugin_path, _) = resolve_plugin_path(&plugin_dir, &name)?;
     read_plugin_manifest(&plugin_path).map(|m| m.permissions)
 }
 
@@ -346,7 +439,8 @@ pub fn grant_permissions(
     plugin_dir: String,
     permissions: Vec<String>,
 ) -> Result<bool, String> {
-    let mut states = load_plugin_states(&plugin_dir);
+    let plugin_root = get_plugins_root(&plugin_dir);
+    let mut states = load_plugin_states(plugin_root.to_string_lossy().as_ref());
 
     if let Some(state) = states.plugins.get_mut(&name) {
         // Merge new permissions with existing ones
@@ -355,11 +449,54 @@ pub fn grant_permissions(
                 state.granted_permissions.push(perm);
             }
         }
-        save_plugin_states(&plugin_dir, &states)?;
+        save_plugin_states(plugin_root.to_string_lossy().as_ref(), &states)?;
         Ok(true)
     } else {
         Err(format!("Plugin not tracked: {}", name))
     }
+}
+
+// cross plugin permission check
+#[tauri::command]
+pub fn check_cross_plugin_permission(
+    caller_plugin: String,
+    target_plugin: String,
+    method: String,
+    plugin_dir: String,
+) -> Result<bool, String> {
+    // Get caller plugin's manifest using resolve_plugin_path
+    let (caller_path, _) = resolve_plugin_path(&plugin_dir, &caller_plugin)
+        .ok_or_else(|| format!("Caller plugin not found: {}", caller_plugin))?;
+
+    let manifest = read_plugin_manifest(&caller_path)
+        .ok_or_else(|| format!("Caller plugin manifest not found"))?;
+
+    // Check if caller has permission for this target plugin + method
+    // The manifest contains display names in cross_plugin_access, so compare directly
+    for access in &manifest.cross_plugin_access {
+        if access.plugin == target_plugin && access.methods.contains(&method) {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+// Get all cross-plugin permissions for a plugin - returns them as-is from manifest
+#[tauri::command]
+pub fn get_cross_plugin_permissions(
+    plugin_name: String,
+    plugin_dir: String,
+) -> Result<Vec<CrossPluginAccess>, String> {
+    // Resolve path using robust helper
+    let (plugin_path, _) = resolve_plugin_path(&plugin_dir, &plugin_name)
+        .ok_or_else(|| format!("Plugin not found: {}", plugin_name))?;
+
+    let manifest =
+        read_plugin_manifest(&plugin_path).ok_or_else(|| format!("Plugin manifest not found"))?;
+
+    // Return cross_plugin_access as-is (contains display names like "Tidal Search")
+    Ok(manifest.cross_plugin_access)
 }
 
 #[tauri::command]
@@ -368,13 +505,14 @@ pub fn revoke_permissions(
     plugin_dir: String,
     permissions: Vec<String>,
 ) -> Result<bool, String> {
-    let mut states = load_plugin_states(&plugin_dir);
+    let plugin_root = get_plugins_root(&plugin_dir);
+    let mut states = load_plugin_states(plugin_root.to_string_lossy().as_ref());
 
     if let Some(state) = states.plugins.get_mut(&name) {
         state
             .granted_permissions
             .retain(|p| !permissions.contains(p));
-        save_plugin_states(&plugin_dir, &states)?;
+        save_plugin_states(plugin_root.to_string_lossy().as_ref(), &states)?;
         Ok(true)
     } else {
         Err(format!("Plugin not tracked: {}", name))
@@ -383,11 +521,434 @@ pub fn revoke_permissions(
 
 #[tauri::command]
 pub fn get_plugin_dir(app_handle: tauri::AppHandle) -> Result<String, String> {
-    let app_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
-    let plugin_dir = app_dir.join("plugins");
-    fs::create_dir_all(&plugin_dir).map_err(|e| e.to_string())?;
-    Ok(plugin_dir.to_string_lossy().to_string())
+    // On Linux use XDG config directory (~/.config/<app>/plugins)
+    #[cfg(target_os = "linux")]
+    {
+        let mut plugin_dir = dirs::config_dir()
+            .ok_or_else(|| "Failed to get config directory".to_string())?;
+        // Use the package name as the application folder (e.g., "audion")
+        plugin_dir.push(env!("CARGO_PKG_NAME"));
+        plugin_dir.push("plugins");
+        fs::create_dir_all(&plugin_dir).map_err(|e| e.to_string())?;
+        return Ok(plugin_dir.to_string_lossy().to_string());
+    }
+
+    // Default behavior for other platforms: use app data dir
+    #[cfg(not(target_os = "linux"))]
+    {
+        let app_dir = app_handle
+            .path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())?;
+        let plugin_dir = app_dir.join("plugins");
+        fs::create_dir_all(&plugin_dir).map_err(|e| e.to_string())?;
+        Ok(plugin_dir.to_string_lossy().to_string())
+    }
+}
+
+// Helper to compare semver versions (returns true if remote is newer)
+fn is_newer_version(local: &str, remote: &str) -> bool {
+    let parse_version = |v: &str| -> Vec<u32> {
+        v.trim_start_matches('v')
+            .split('.')
+            .filter_map(|s| s.parse().ok())
+            .collect()
+    };
+
+    let local_parts = parse_version(local);
+    let remote_parts = parse_version(remote);
+
+    for i in 0..std::cmp::max(local_parts.len(), remote_parts.len()) {
+        let local_num = local_parts.get(i).copied().unwrap_or(0);
+        let remote_num = remote_parts.get(i).copied().unwrap_or(0);
+
+        if remote_num > local_num {
+            return true;
+        } else if remote_num < local_num {
+            return false;
+        }
+    }
+    false
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct PluginUpdateInfo {
+    pub name: String,
+    pub current_version: String,
+    pub new_version: String,
+    pub repo_url: String,
+}
+
+#[tauri::command]
+pub async fn check_plugin_updates(plugin_dir: String) -> Result<Vec<PluginUpdateInfo>, String> {
+    let mut updates = Vec::new();
+    let dir = get_plugins_root(&plugin_dir);
+    let client = reqwest::Client::new();
+
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(manifest) = read_plugin_manifest(&path) {
+                    // Need repo URL to check for updates
+                    if let Some(repo_url) = &manifest.repo {
+                        // Parse GitHub URL
+                        let parts: Vec<&str> = repo_url.trim_end_matches('/').split('/').collect();
+                        if parts.len() < 2 {
+                            continue;
+                        }
+
+                        let owner = parts[parts.len() - 2];
+                        let repo = parts[parts.len() - 1];
+
+                        // Get default branch
+                        let repo_api_url =
+                            format!("https://api.github.com/repos/{}/{}", owner, repo);
+                        let default_branch = match client
+                            .get(&repo_api_url)
+                            .header("User-Agent", "Audion-Plugin-Manager")
+                            .send()
+                            .await
+                        {
+                            Ok(resp) if resp.status().is_success() => {
+                                match resp.json::<serde_json::Value>().await {
+                                    Ok(info) => info["default_branch"]
+                                        .as_str()
+                                        .unwrap_or("main")
+                                        .to_string(),
+                                    Err(_) => "main".to_string(),
+                                }
+                            }
+                            _ => "main".to_string(),
+                        };
+
+                        // Fetch remote plugin.json
+                        let manifest_url = format!(
+                            "https://raw.githubusercontent.com/{}/{}/{}/plugin.json",
+                            owner, repo, default_branch
+                        );
+
+                        if let Ok(resp) = client
+                            .get(&manifest_url)
+                            .header("User-Agent", "Audion-Plugin-Manager")
+                            .send()
+                            .await
+                        {
+                            if resp.status().is_success() {
+                                if let Ok(remote_manifest) = resp.json::<PluginManifest>().await {
+                                    if is_newer_version(&manifest.version, &remote_manifest.version)
+                                    {
+                                        updates.push(PluginUpdateInfo {
+                                            name: manifest.name.clone(),
+                                            current_version: manifest.version.clone(),
+                                            new_version: remote_manifest.version,
+                                            repo_url: repo_url.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(updates)
+}
+
+#[tauri::command]
+pub async fn update_plugin(name: String, plugin_dir: String) -> Result<PluginInfo, String> {
+    // Get the current plugin's path using resolve_plugin_path
+    let (plugin_path, _) = resolve_plugin_path(&plugin_dir, &name)
+        .ok_or_else(|| format!("Plugin not found: {}", name))?;
+
+    let manifest =
+        read_plugin_manifest(&plugin_path).ok_or_else(|| format!("Plugin manifest not found"))?;
+
+    let repo_url = manifest
+        .repo
+        .ok_or_else(|| format!("Plugin {} has no repository URL", name))?;
+
+    // Load current state to preserve enabled status and permissions
+    let plugin_root = get_plugins_root(&plugin_dir);
+    let states = load_plugin_states(plugin_root.to_string_lossy().as_ref());
+    let current_state = states.plugins.get(&name).cloned();
+
+    // Remove the old plugin files (but keep state)
+    // NOTE: This will delete the arbitrary folder it was in.
+    // The re-install below will use the safe name. This effectively "standardizes"
+    // the folder name on update, which is desirable.
+    fs::remove_dir_all(&plugin_path)
+        .map_err(|e| format!("Failed to remove old plugin files: {}", e))?;
+
+    // Reinstall from repo (reuse install_plugin logic parts)
+    let parts: Vec<&str> = repo_url.trim_end_matches('/').split('/').collect();
+    if parts.len() < 2 {
+        return Err("Invalid repository URL".to_string());
+    }
+
+    let owner = parts[parts.len() - 2];
+    let repo = parts[parts.len() - 1];
+    let client = reqwest::Client::new();
+
+    // Get default branch
+    let repo_api_url = format!("https://api.github.com/repos/{}/{}", owner, repo);
+    let default_branch = match client
+        .get(&repo_api_url)
+        .header("User-Agent", "Audion-Plugin-Manager")
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(info) => info["default_branch"]
+                .as_str()
+                .unwrap_or("main")
+                .to_string(),
+            Err(_) => "main".to_string(),
+        },
+        _ => "main".to_string(),
+    };
+
+    // Fetch new plugin.json
+    let manifest_url = format!(
+        "https://raw.githubusercontent.com/{}/{}/{}/plugin.json",
+        owner, repo, default_branch
+    );
+
+    let manifest_response = client
+        .get(&manifest_url)
+        .header("User-Agent", "Audion-Plugin-Manager")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch plugin.json: {}", e))?;
+
+    if !manifest_response.status().is_success() {
+        return Err(format!(
+            "Failed to fetch plugin.json: HTTP {}",
+            manifest_response.status()
+        ));
+    }
+
+    let mut new_manifest: PluginManifest = manifest_response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse plugin.json: {}", e))?;
+
+    // Inject repo URL into manifest for future update checks
+    new_manifest.repo = Some(repo_url.clone());
+
+    // Get safe name from manifest (prefers explicit safe_name field)
+    let new_safe_name = get_safe_name_from_manifest(&new_manifest);
+    // When updating, we revert to standard naming
+    let new_plugin_path = plugin_root.join(&new_safe_name);
+
+    fs::create_dir_all(&new_plugin_path)
+        .map_err(|e| format!("Failed to create plugin dir: {}", e))?;
+
+    // Save new plugin.json
+    let manifest_json = serde_json::to_string_pretty(&new_manifest)
+        .map_err(|e| format!("Failed to serialize manifest: {}", e))?;
+    fs::write(new_plugin_path.join("plugin.json"), &manifest_json)
+        .map_err(|e| format!("Failed to save plugin.json: {}", e))?;
+
+    // Fetch the entry file
+    let entry_url = format!(
+        "https://raw.githubusercontent.com/{}/{}/{}/{}",
+        owner, repo, default_branch, new_manifest.entry
+    );
+
+    let entry_response = client
+        .get(&entry_url)
+        .header("User-Agent", "Audion-Plugin-Manager")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch entry file: {}", e))?;
+
+    if !entry_response.status().is_success() {
+        return Err(format!(
+            "Failed to fetch {}: HTTP {}",
+            new_manifest.entry,
+            entry_response.status()
+        ));
+    }
+
+    let entry_bytes = entry_response
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read entry file: {}", e))?;
+
+    fs::write(new_plugin_path.join(&new_manifest.entry), &entry_bytes)
+        .map_err(|e| format!("Failed to save entry file: {}", e))?;
+
+    // Update state, preserving enabled status and permissions from before
+    let mut states = load_plugin_states(plugin_root.to_string_lossy().as_ref());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let (enabled, granted_permissions) = if let Some(old_state) = current_state {
+        (old_state.enabled, old_state.granted_permissions)
+    } else {
+        (false, vec![])
+    };
+
+    states.plugins.insert(
+        new_manifest.name.clone(),
+        PluginState {
+            name: new_manifest.name.clone(),
+            enabled,
+            granted_permissions: granted_permissions.clone(),
+            version: new_manifest.version.clone(),
+            plugin_type: new_manifest.plugin_type.clone(),
+            installed_at: now,
+        },
+    );
+    save_plugin_states(plugin_root.to_string_lossy().as_ref(), &states)?;
+
+    Ok(PluginInfo {
+        name: new_manifest.name.clone(),
+        enabled,
+        manifest: new_manifest,
+        granted_permissions,
+    })
+}
+
+// windows currently ignore images
+#[tauri::command]
+pub fn save_notification_image(data_uri: String) -> Result<String, String> {
+    // Parse the data URI
+    // Format: data:image/jpeg;base64,<base64_data>
+    let parts: Vec<&str> = data_uri.split(',').collect();
+    if parts.len() != 2 {
+        return Err("Invalid data URI format".to_string());
+    }
+
+    let header = parts[0];
+    let base64_data = parts[1];
+
+    // Extract image type (jpeg, png, etc.)
+    let image_ext = if header.contains("jpeg") || header.contains("jpg") {
+        "jpg"
+    } else if header.contains("png") {
+        "png"
+    } else if header.contains("gif") {
+        "gif"
+    } else {
+        "jpg" // default
+    };
+
+    // Decode base64
+    let image_data = general_purpose::STANDARD
+        .decode(base64_data)
+        .map_err(|e| format!("Failed to decode base64: {}", e))?;
+
+    // Get temp directory
+    let temp_dir = std::env::temp_dir();
+
+    // Create a unique filename
+    let filename = format!(
+        "audion_notification_{}.{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+        image_ext
+    );
+
+    let temp_path = temp_dir.join(filename);
+
+    // Write to file
+    fs::write(&temp_path, image_data).map_err(|e| format!("Failed to write file: {}", e))?;
+
+    // Return the absolute path as string
+    temp_path
+        .to_str()
+        .ok_or_else(|| "Failed to convert path to string".to_string())
+        .map(|s| s.to_string())
+}
+
+#[tauri::command]
+pub async fn plugin_save_data(
+    plugin_name: String,
+    key: String,
+    value: String,
+    plugin_dir: String,
+) -> Result<(), String> {
+    let safe_name = to_safe_name(&plugin_name);
+    let storage_dir = get_plugins_root(&plugin_dir)
+        .join(&safe_name)
+        .join("storage");
+    fs::create_dir_all(&storage_dir).map_err(|e| e.to_string())?;
+
+    let file_path = storage_dir.join(format!("{}.json", key));
+    fs::write(file_path, value).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn plugin_get_data(
+    plugin_name: String,
+    key: String,
+    plugin_dir: String,
+) -> Result<Option<String>, String> {
+    let safe_name = to_safe_name(&plugin_name);
+    let file_path = get_plugins_root(&plugin_dir)
+        .join(&safe_name)
+        .join("storage")
+        .join(format!("{}.json", key));
+
+    if file_path.exists() {
+        let content = fs::read_to_string(file_path).map_err(|e| e.to_string())?;
+        Ok(Some(content))
+    } else {
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+pub async fn plugin_list_keys(
+    plugin_name: String,
+    plugin_dir: String,
+) -> Result<Vec<String>, String> {
+    let safe_name = to_safe_name(&plugin_name);
+    let storage_dir = get_plugins_root(&plugin_dir)
+        .join(&safe_name)
+        .join("storage");
+
+    if !storage_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut keys = Vec::new();
+    if let Ok(entries) = fs::read_dir(storage_dir) {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.path().file_stem().and_then(|s| s.to_str()) {
+                keys.push(name.to_string());
+            }
+        }
+    }
+    Ok(keys)
+}
+
+#[tauri::command]
+pub async fn plugin_clear_data(plugin_name: String, plugin_dir: String) -> Result<usize, String> {
+    let safe_name = to_safe_name(&plugin_name);
+    let storage_dir = get_plugins_root(&plugin_dir)
+        .join(&safe_name)
+        .join("storage");
+
+    if !storage_dir.exists() {
+        return Ok(0);
+    }
+
+    let count = fs::read_dir(&storage_dir)
+        .map(|entries| entries.flatten().count())
+        .unwrap_or(0);
+
+    fs::remove_dir_all(&storage_dir).map_err(|e| e.to_string())?;
+    fs::create_dir_all(&storage_dir).map_err(|e| e.to_string())?;
+
+    Ok(count)
 }

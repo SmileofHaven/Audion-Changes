@@ -1,28 +1,25 @@
 (function () {
     // ═══════════════════════════════════════════════════════════════════════════
-    // SPOTIFY CONVERTER PLUGIN
+    // SPOTIFY CONVERTER PLUGIN - API VERSION
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PLUGIN LOGIC
     // ═══════════════════════════════════════════════════════════════════════════
 
     const SpotifyConverter = {
         name: 'Spotify Converter',
         api: null,
+
         isOpen: false,
         isConverting: false,
         stopConversion: false,
 
         // API endpoints
         TIDAL_API_BASE: 'https://katze.qqdl.site',
-        // CORS proxy might be needed for Spotify if direct fetch fails due to CORS,
-        // but often we can fetch public pages. If not, we might need a proxy.
-        // For now we'll try direct fetch, and if it fails (likely due to CORS), we'll note it.
-        // Actually, 'network:fetch' in Tauri usually bypasses CORS if done via backend,
-        // but here plugins use browser fetch.
-        // However, we are in a Tauri app properly configured, we might have privileges.
-        // If strict CORS applies, we might need a workaround or the user to use a backend proxy.
-        // Let's assume we can fetch or use a CORS proxy.
-        CORS_PROXY: 'https://api.allorigins.win/raw?url=',
+        NEW_SPOTIFY_API_BASE: 'https://spotify-api-6y41.vercel.app/api/playlist',
 
-        init(api) {
+        async init(api) {
             console.log('[SpotifyConverter] Initializing...');
             this.api = api;
 
@@ -32,10 +29,6 @@
 
             console.log('[SpotifyConverter] Ready');
         },
-
-        // ═══════════════════════════════════════════════════════════════════════
-        // UI
-        // ═══════════════════════════════════════════════════════════════════════
 
         injectStyles() {
             if (document.getElementById('spotify-converter-styles')) return;
@@ -120,6 +113,12 @@
                     flex-direction: column;
                     gap: 8px;
                 }
+                
+                .sc-details {
+                    font-size: 12px;
+                    color: #888;
+                    margin-top: -4px;
+                }
 
                 .sc-input {
                     background: var(--bg-surface, #282828);
@@ -129,6 +128,7 @@
                     border-radius: 8px;
                     font-size: 14px;
                     width: 100%;
+                    box-sizing: border-box;
                 }
                 .sc-input:focus {
                     outline: none;
@@ -148,12 +148,38 @@
                 .sc-btn:hover:not(:disabled) { transform: scale(1.02); filter: brightness(1.1); }
                 .sc-btn:disabled { opacity: 0.6; cursor: not-allowed; }
                 .sc-btn.secondary { background: var(--bg-highlight, #3e3e3e); }
+                .sc-btn.help { 
+                    background: transparent; 
+                    border: 1px solid var(--border-color, #404040); 
+                    color: var(--text-secondary, #b3b3b3);
+                    padding: 8px 12px;
+                    font-size: 12px;
+                }
+                .sc-btn.help:hover {
+                    border-color: #1DB954;
+                    color: #1DB954;
+                }
+
+                .sc-help-box {
+                    background: var(--bg-surface, #282828);
+                    border: 1px solid var(--border-color, #404040);
+                    border-radius: 8px;
+                    padding: 16px;
+                    margin-bottom: 16px;
+                    font-size: 13px;
+                    color: var(--text-secondary, #b3b3b3);
+                    display: none;
+                }
+                .sc-help-box.visible { display: block; }
+                .sc-help-box a { color: #1DB954; text-decoration: none; }
+                .sc-help-box ul { margin: 8px 0; padding-left: 20px; }
+                .sc-help-box li { margin-bottom: 4px; }
 
                 .sc-log {
                     background: #000;
                     border-radius: 8px;
                     padding: 12px;
-                    height: 200px;
+                    height: 150px;
                     overflow-y: auto;
                     font-family: monospace;
                     font-size: 12px;
@@ -178,6 +204,63 @@
                     width: 0%;
                     transition: width 0.3s;
                 }
+
+                /* ═══ Mobile Responsive ═══ */
+                @media (max-width: 768px) {
+                    #spotify-converter-modal {
+                        width: 100vw;
+                        height: 100vh;
+                        max-width: 100vw;
+                        max-height: 100vh;
+                        top: 0; left: 0;
+                        transform: none;
+                        border-radius: 0;
+                        border: none;
+                        padding: 16px;
+                        gap: 14px;
+                        justify-content: flex-start;
+                    }
+                    #spotify-converter-modal.open {
+                        transform: none;
+                    }
+
+                    .sc-header h2 {
+                        font-size: 18px;
+                    }
+                    .sc-close-btn {
+                        min-width: 44px;
+                        min-height: 44px;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        -webkit-tap-highlight-color: transparent;
+                    }
+
+                    .sc-input {
+                        font-size: 16px; /* prevent iOS zoom */
+                        padding: 14px 12px;
+                    }
+
+                    .sc-btn {
+                        min-height: 48px;
+                        font-size: 15px;
+                        -webkit-tap-highlight-color: transparent;
+                    }
+                    .sc-btn.help {
+                        min-height: 44px;
+                        font-size: 13px;
+                    }
+
+                    .sc-log {
+                        height: 120px;
+                        font-size: 11px;
+                    }
+
+                    .sc-help-box {
+                        font-size: 12px;
+                        padding: 12px;
+                    }
+                }
             `;
             document.head.appendChild(style);
         },
@@ -198,7 +281,9 @@
                         </svg>
                         Spotify to Audion
                     </h2>
-                    <button class="sc-close-btn" id="sc-close-btn">✕</button>
+                    <div style="display:flex; gap:8px;">
+                        <button class="sc-close-btn" id="sc-close-btn">✕</button>
+                    </div>
                 </div>
 
                 <div class="sc-input-group">
@@ -227,6 +312,8 @@
             modal.querySelector('#sc-stop-btn').onclick = () => { this.stopConversion = true; };
         },
 
+
+
         createMenuButton() {
             const btn = document.createElement('button');
             btn.className = 'plugin-menu-btn';
@@ -243,7 +330,43 @@
         },
 
         // ═══════════════════════════════════════════════════════════════════════
-        // LOGIC
+        // SPOTIFY API METHODS
+        // ═══════════════════════════════════════════════════════════════════════
+
+        async fetchPlaylistFromAPI(playlistId) {
+            this.log(`Fetching playlist from new API...`, 'info');
+            const response = await this.api.fetch(`${this.NEW_SPOTIFY_API_BASE}/${playlistId}`);
+
+            if (!response.ok) {
+                throw new Error(`Failed to fetch playlist data: ${response.status}`);
+            }
+
+            const json = await response.json();
+            if (!json.success || !json.data) {
+                throw new Error('Invalid response from Spotify API');
+            }
+
+            const data = json.data;
+            const tracks = data.tracks.map(t => ({
+                title: t.name,
+                artist: t.artists.join(', '),
+                album: t.album,
+                duration_ms: t.duration_ms,
+                // New API doesn't seem to provide ISRC in the example, but let's keep the field
+                isrc: null
+            }));
+
+            return {
+                title: 'Spotify Import', // The new API doesn't seem to return playlist name in the example
+                description: `Imported with ${tracks.length} tracks`,
+                tracks: tracks
+            };
+        },
+
+
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // MAIN LOGIC
         // ═══════════════════════════════════════════════════════════════════════
 
         open() {
@@ -301,6 +424,14 @@
                 return;
             }
 
+            // Extract playlist ID
+            const playlistIdMatch = url.match(/playlist\/([a-zA-Z0-9]+)/);
+            if (!playlistIdMatch) {
+                this.log('Could not extract playlist ID', 'error');
+                return;
+            }
+            const playlistId = playlistIdMatch[1];
+
             this.isConverting = true;
             this.stopConversion = false;
             btn.disabled = true;
@@ -308,77 +439,88 @@
             urlInput.disabled = true;
             this.updateProgress(0);
 
-            // Clear log except header
             document.getElementById('sc-log').innerHTML = '';
             this.log('Starting conversion...');
 
             try {
-                // 0. Pre-fetch library map
-                this.log('Checking existing library...');
+                this.log('Fetching playlist...', 'info');
+                const playlistData = await this.fetchPlaylistFromAPI(playlistId);
+                this.log(`Found ${playlistData.tracks.length} tracks`, 'success');
+
+                // 2. Pre-fetch library map for fast dup-checking
+                this.log('Checking existing library...', 'info');
                 const existingTracks = await this.getTidalLibraryMap();
-                this.log(`Loaded map of ${existingTracks.size} existing Tidal tracks.`, 'info');
+                this.log(`Loaded ${existingTracks.size} existing Tidal tracks`, 'info');
 
-                // 1. Fetch playlist page
-                this.log('Fetching playlist data...');
-                const playlistData = await this.fetchPlaylistData(url);
-                this.log(`Found playlist: "${playlistData.title}" with ${playlistData.tracks.length} tracks`, 'success');
+                // 3. Create Audion playlist
+                this.log('Creating local playlist...', 'info');
+                const audionPlaylistId = await this.api.library.createPlaylist(playlistData.title);
 
-                // 2. Create Audion playlist
-                this.log('Creating local playlist...');
-                const playlistId = await this.api.library.createPlaylist(playlistData.title);
-                this.log(`Created playlist ID: ${playlistId}`, 'info');
-
-                // 3. Process tracks
+                // 4. Process tracks concurrently
+                // Worker Pool Pattern
+                const concurrency = 5; // Run 5 searches/adds in parallel
+                const total = playlistData.tracks.length;
                 let processed = 0;
                 let successes = 0;
 
-                for (const track of playlistData.tracks) {
-                    if (this.stopConversion) {
-                        this.log('Conversion stopped by user.', 'warn');
-                        break;
-                    }
+                // Create a queue
+                const queue = [...playlistData.tracks];
+                const activeWorkers = [];
 
-                    processed++;
-                    this.updateProgress((processed / playlistData.tracks.length) * 100);
+                const worker = async () => {
+                    while (queue.length > 0 && !this.stopConversion) {
+                        const track = queue.shift();
 
-                    try {
-                        const query = `${track.title} ${track.artist}`;
-                        this.log(`Searching: ${track.title} + ${track.artist}`, 'info');
+                        try {
+                            const query = track.isrc ? `isrc:${track.isrc}` : `${track.title} ${track.artist}`;
 
-                        const tidalTrack = await this.searchTidal(query);
+                            // Log only every 5th track or so to reduce spam, or just progress
+                            // this.log(`Searching: ${track.title}`, 'info');
 
-                        if (tidalTrack) {
-                            const tidalId = String(tidalTrack.id);
-                            const foundTitle = tidalTrack.title;
-                            const foundArtist = tidalTrack.artist?.name || tidalTrack.artists?.[0]?.name || 'Unknown';
-                            let trackId;
+                            // Find best match
+                            const tidalTrack = await this.searchTidal(track);
 
-                            if (existingTracks.has(tidalId)) {
-                                trackId = existingTracks.get(tidalId);
-                                this.log(`[${processed}/${playlistData.tracks.length}] Reusing: ${foundTitle} - ${foundArtist}`, 'info');
-                            } else {
-                                trackId = await this.addTrackToLibrary(tidalTrack);
-                                existingTracks.set(tidalId, trackId);
-                                this.log(`[${processed}/${playlistData.tracks.length}] Found: ${foundTitle} - ${foundArtist}`, 'success');
+                            if (tidalTrack) {
+                                const tidalId = String(tidalTrack.id);
+                                let trackId;
+
+                                if (existingTracks.has(tidalId)) {
+                                    trackId = existingTracks.get(tidalId);
+                                } else {
+                                    trackId = await this.addTrackToLibrary(tidalTrack);
+                                    existingTracks.set(tidalId, trackId);
+                                }
+
+                                await this.api.library.addTrackToPlaylist(audionPlaylistId, trackId);
+                                successes++;
                             }
 
-                            await this.api.library.addTrackToPlaylist(playlistId, trackId);
-                            successes++;
-                        } else {
-                            this.log(`[${processed}/${playlistData.tracks.length}] Not found: ${track.title}`, 'warn');
-                        }
-                    } catch (err) {
-                        console.error(err);
-                        this.log(`[${processed}/${playlistData.tracks.length}] Error: ${track.title}`, 'error');
-                    }
+                            processed++;
+                            if (processed % 5 === 0 || processed === total) {
+                                this.updateProgress((processed / total) * 100);
+                                this.log(`Processed ${processed}/${total} tracks...`, 'info');
+                            }
 
-                    await new Promise(r => setTimeout(r, 200));
+                        } catch (err) {
+                            console.error(err);
+                            // this.log(`Error processing ${track.title}`, 'error');
+                            processed++;
+                        }
+                    }
+                };
+
+                // Start workers
+                for (let i = 0; i < concurrency; i++) {
+                    activeWorkers.push(worker());
                 }
 
-                this.log(`Done! Imported ${successes} of ${playlistData.tracks.length} tracks.`, 'success');
+                await Promise.all(activeWorkers);
 
-                if (this.api.library.refresh) {
-                    this.api.library.refresh();
+                if (this.stopConversion) {
+                    this.log('Conversion stopped by user.', 'warn');
+                } else {
+                    this.log(`Done! Imported ${successes}/${total} tracks`, 'success');
+                    if (this.api.library.refresh) this.api.library.refresh();
                 }
 
             } catch (err) {
@@ -392,300 +534,53 @@
             }
         },
 
-        async fetchPlaylistData(url) {
-            let html = null;
-
-            // List of proxies to try in order
-            const proxies = [
-                (u) => `https://corsproxy.io/?${encodeURIComponent(u)}`,
-                (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
-                (u) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`
-            ];
-
-            // 1. Try Direct Fetch (unlikely to work for Spotify but good practice)
+        async searchTidal(sourceTrack) {
             try {
-                const res = await fetch(url);
-                if (res.ok) {
-                    html = await res.text();
-                }
-            } catch (e) { /* ignore */ }
-
-            // 2. Try Proxies
-            if (!html) {
-                for (const proxyFn of proxies) {
-                    const proxyUrl = proxyFn(url);
-                    this.log(`Trying proxy: ${new URL(proxyUrl).hostname}...`, 'info');
-                    try {
-                        const res = await fetch(proxyUrl);
-                        if (!res.ok) throw new Error(`Status ${res.status}`);
-                        html = await res.text();
-                        if (html) {
-                            this.log('Proxy fetch successful', 'success');
-                            break;
-                        }
-                    } catch (e) {
-                        console.warn(`Proxy failed: ${proxyUrl}`, e);
-                    }
-                }
-            }
-
-            if (!html) {
-                throw new Error('Failed to fetch playlist data. All proxies failed.');
-            }
-
-            const parser = new DOMParser();
-            const doc = parser.parseFromString(html, 'text/html');
-
-            const title = doc.querySelector('meta[property="og:title"]')?.content || 'Spotify Playlist';
-            const tracks = [];
-
-            // Strategy 1: Look for JSON metadata (SpotifyEntity or initial-state)
-            try {
-                // Check for generic initial-state script (Common in React/Next.js apps like Spotify)
-                const stateScript = doc.getElementById('initial-state') || doc.getElementById('session'); // session sometimes has it
-
-                if (stateScript) {
-                    let jsonStr = stateScript.textContent;
-                    // Attempt base64 decode if it looks like base64 (no curly brace at start)
-                    if (jsonStr && !jsonStr.trim().startsWith('{')) {
-                        try {
-                            jsonStr = atob(jsonStr);
-                        } catch (e) { /* ignore, maybe not base64 */ }
-                    }
-
-                    if (jsonStr) {
-                        const data = JSON.parse(jsonStr);
-                        // Traverse potential paths for tracks
-                        // Path 1: entities relative
-                        // Path 2: queries
-
-                        // Helper to finding tracks in big object
-                        const findItems = (obj) => {
-                            if (!obj || typeof obj !== 'object') return;
-                            if (obj.items && Array.isArray(obj.items) && obj.items.length > 0) {
-                                const first = obj.items[0];
-                                if (first.track && first.track.artists) {
-                                    // Found it!
-                                    obj.items.forEach(item => {
-                                        if (item.track) {
-                                            tracks.push({
-                                                title: item.track.name,
-                                                artist: item.track.artists.map(a => a.name).join(', ')
-                                            });
-                                        }
-                                    });
-                                }
-                            }
-                            Object.values(obj).forEach(val => findItems(val));
-                        };
-
-                        findItems(data);
-                    }
+                // 1. Try ISRC search first (Highly accurate)
+                if (sourceTrack.isrc) {
+                    // Try fetch via ISRC if API supported it, but we can stick to search for now or use the track endpoint
+                    // const res = await this.api.fetch(...) 
                 }
 
-                if (tracks.length === 0) {
-                    // Fallback to searching scripts for "SpotifyEntity"
-                    const scripts = Array.from(doc.scripts);
-                    let resourceScript = scripts.find(s => s.textContent.includes('SpotifyEntity'));
+                // Standard search
+                const query = `${sourceTrack.title} ${sourceTrack.artist}`;
+                const response = await this.api.fetch(`${this.TIDAL_API_BASE}/search/?s=${encodeURIComponent(query)}`);
 
-                    if (resourceScript) {
-                        const match = resourceScript.textContent.match(/SpotifyEntity\s*=\s*({.+?});/s);
-                        if (match && match[1]) {
-                            const data = JSON.parse(match[1]);
-                            if (data && data.tracks && data.tracks.items) {
-                                data.tracks.items.forEach(item => {
-                                    const t = item.track;
-                                    if (t) {
-                                        tracks.push({
-                                            title: t.name,
-                                            artist: t.artists.map(a => a.name).join(', ')
-                                        });
-                                    }
-                                });
-                            }
-                        }
-                    }
-                }
-            } catch (e) { console.warn('JSON parse failed', e); }
-
-            // Strategy 1.5: Look for hydration data (modern Spotify)
-            // It looks like <script type="application/json" id="shared-data"> or similar
-            if (tracks.length === 0) {
-                // Try simple regex search on the whole HTML for track/artist patterns if DOM is messy.
-                // "name":"Track Name" ... "artists":[{"name":"Artist"}]
-                // This is risky but powerful for large blobs
-            }
-
-            // Strategy 2: User-provided DOM scraping logic (Adapted for static HTML)
-            if (tracks.length === 0) {
-                this.log('Attempting user-provided scraper logic...', 'info');
-
-                // Get all track rows
-                const trackRows = doc.querySelectorAll('[data-testid="tracklist-row"], [data-testid="playlist-tracklist-row"]');
-                this.log(`Strategy 2: Found ${trackRows.length} track rows`, 'info');
-
-                trackRows.forEach((row, index) => {
-                    try {
-                        // Strategy 1: Look for title and artist in common containers
-                        let songTitle = row.querySelector('[data-testid="internal-track-link"] div')?.textContent ||
-                            row.querySelector('a[href*="/track/"] div')?.textContent;
-
-                        let artist = row.querySelector('a[href*="/artist/"]')?.textContent;
-
-                        // Strategy 2: Alternative selectors
-                        if (!songTitle) {
-                            songTitle = row.querySelector('.t_yrXoUO3qGsJS4Y6iXX')?.textContent ||
-                                row.querySelector('[dir="auto"]')?.textContent;
-                            // Fallback to direct link text if div lookup failed
-                            if (!songTitle) {
-                                songTitle = row.querySelector('a[href*="/track/"]')?.textContent;
-                            }
-                        }
-
-                        if (!artist) {
-                            const artistLinks = row.querySelectorAll('a[href*="/artist/"]');
-                            if (artistLinks.length > 0) {
-                                artist = Array.from(artistLinks).map(a => a.textContent).join(', ');
-                            }
-                        }
-
-                        if (songTitle) {
-                            tracks.push({
-                                title: songTitle.trim(),
-                                artist: artist ? artist.trim() : 'Unknown Artist'
-                            });
-                        }
-                    } catch (err) {
-                        console.warn(`Error parsing row ${index + 1}:`, err);
-                    }
-                });
-            }
-
-            // Strategy 3: Fallback simple link scraper (if the structured rows don't exist in static HTML)
-            if (tracks.length === 0) {
-                this.log('Strategy 2 failed (0 tracks). Falling back to smart link scraping.', 'warn');
-                const trackLinks = Array.from(doc.querySelectorAll('a[href*="/track/"]'));
-                this.log(`Strategy 3: Found ${trackLinks.length} track links`, 'info');
-
-                // DEBUG: Log first track's HTML structure
-                if (trackLinks.length > 0) {
-                    const firstLink = trackLinks[0];
-                    console.log('=== FIRST TRACK LINK DEBUG ===');
-                    console.log('Link text:', firstLink.textContent);
-                    console.log('Link HTML:', firstLink.outerHTML);
-                    console.log('Parent HTML:', firstLink.parentElement?.outerHTML);
-                    // Use closest div or fallback to parent's parent for context
-                    const container = firstLink.closest('div') || firstLink.parentElement?.parentElement;
-                    if (container) {
-                        console.log('Container HTML:', container.outerHTML.substring(0, 500));
-                    }
-                }
-
-                for (const link of trackLinks) {
-                    const trackTitle = link.textContent.trim();
-                    if (!trackTitle) continue;
-
-                    // Deduplicate based on title in this fallback pass
-                    if (tracks.find(t => t.title === trackTitle)) continue;
-
-                    let artistName = '';
-
-                    // Try to find artist in next sibling or parent's sibling (look ahead)
-                    let next = link.nextElementSibling;
-                    // Or check parent's next sibling if link is inside a div
-                    if (!next && link.parentElement.tagName === 'DIV') {
-                        next = link.parentElement.nextElementSibling;
-                    }
-
-                    // Look ahead a few elements for an artist link OR text span
-                    let lookAhead = 5;
-                    while (next && lookAhead > 0) {
-                        // 1. Check for Artist Link
-                        if (next.tagName === 'A' && next.href.includes('/artist/')) {
-                            artistName = next.textContent.trim();
-                            break;
-                        }
-
-                        // 2. Check for nested Artist Link
-                        if (next.querySelector) {
-                            const internalArtist = next.querySelector('a[href*="/artist/"]');
-                            if (internalArtist) {
-                                artistName = internalArtist.textContent.trim();
-                                break;
-                            }
-
-                            // 3. User Snippet Match: Check for Artist in SPAN (like "NIKI" case)
-                            // Structure: Track Link -> Div -> Span(Artist)
-                            // Or Track Link -> Span(Artist)
-                            const possibleArtistSpan = next.querySelector('span[class*="encore-text"], span[class*="text"]');
-                            if (possibleArtistSpan) {
-                                const t = possibleArtistSpan.textContent.trim();
-                                // Avoid confusing with duration (e.g. 3:45) or other metadata
-                                if (t && t.length > 1 && !t.includes(':') && t !== 'E') {
-                                    artistName = t;
-                                    // Don't break immediately, might be a better link further down? 
-                                    // Actually usually this comes right after title.
-                                    break;
-                                }
-                            }
-                        }
-
-                        // 4. Check if NEXT element itself is the span (if layout is flat)
-                        if (next.tagName === 'SPAN' || next.tagName === 'DIV') {
-                            const t = next.textContent.trim();
-                            if (t && !t.includes(':') && t !== 'E' && t.length > 1 && !artistName) {
-                                // Weak guess, but better than empty
-                                // Only accept if we haven't found anything better
-                                // artistName = t; 
-                                // Let's rely on class match or structure above for now to avoid junk
-                            }
-                        }
-
-                        next = next.nextElementSibling;
-                        lookAhead--;
-                    }
-
-                    tracks.push({ title: trackTitle, artist: artistName });
-                }
-            }
-
-            if (tracks.length === 0) {
-                // Strategy 3: Meta description fallback
-                const description = doc.querySelector('meta[name="description"]')?.content;
-                // Format: "Listen on Spotify: Playlist containing Track 1 by Artist 1, Track 2 by Artist 2..."
-                // Only gets first few tracks, but better than crashing.
-                if (description) {
-                    // Try to match "Track by Artist"
-                }
-
-                throw new Error('Could not extract tracks. Spotify might have changed their layout.');
-            }
-
-            return { title, tracks };
-        },
-
-        async searchTidal(query) {
-            try {
-                // Use the same API as tidal-search plugin
-                const response = await fetch(`${this.TIDAL_API_BASE}/search/?s=${encodeURIComponent(query)}`);
                 if (!response.ok) return null;
                 const data = await response.json();
 
                 if (data.data && data.data.items && data.data.items.length > 0) {
-                    return data.data.items[0]; // Best match
+                    // Filter Logic:
+                    // 1. If we have duration, check if it's within tolerance (e.g. +/- 10s)
+                    const matches = data.data.items;
+
+                    if (sourceTrack.duration_ms) {
+                        const sourceSec = sourceTrack.duration_ms / 1000;
+                        const validDuration = matches.find(m => {
+                            const diff = Math.abs(m.duration - sourceSec);
+                            return diff < 10; // 10 seconds tolerance
+                        });
+
+                        // If we found a duration match, return it
+                        if (validDuration) return validDuration;
+                    }
+
+                    // Fallback to first result if no duration match (or no duration info)
+                    return matches[0];
                 }
             } catch (e) {
-                console.warn('Search failed', e);
+                console.warn('Tidal search failed', e);
             }
             return null;
         },
 
         async addTrackToLibrary(tidalTrack) {
-            // Construct data matching what 'tidal-search' does
             const artistName = tidalTrack.artist?.name || tidalTrack.artists?.[0]?.name || 'Unknown Artist';
             const title = tidalTrack.title + (tidalTrack.version ? ` (${tidalTrack.version})` : '');
+
+            // High res cover if available
             const coverUrl = tidalTrack.album?.cover
-                ? `https://resources.tidal.com/images/${tidalTrack.album.cover.replace(/-/g, '/')}/640x640.jpg`
+                ? `https://resources.tidal.com/images/${tidalTrack.album.cover.replace(/-/g, '/')}/1280x1280.jpg`
                 : null;
 
             const trackData = {
@@ -696,15 +591,18 @@
                 cover_url: coverUrl,
                 source_type: 'tidal',
                 external_id: String(tidalTrack.id),
-                format: 'LOSSLESS', // Default, will resolve actual on play
+                format: 'LOSSLESS',
                 bitrate: null
             };
 
-            // Returns track ID
             return await this.api.library.addExternalTrack(trackData);
         }
     };
 
-    window.SpotifyConverter = SpotifyConverter;
-    window.AudionPlugin = SpotifyConverter; // Register standard entry point
+    if (typeof Audion !== 'undefined' && Audion.register) {
+        Audion.register(SpotifyConverter);
+    } else {
+        window.SpotifyConverter = SpotifyConverter;
+        window.AudionPlugin = SpotifyConverter;
+    }
 })();

@@ -10,6 +10,14 @@
     import { goToArtists, goToAlbumDetail } from "$lib/stores/view";
     import AlbumGrid from "./AlbumGrid.svelte";
     import TrackList from "./TrackList.svelte";
+    import {
+        downloadTracks,
+        hasDownloadableTracks,
+        needsDownloadLocation,
+        showDownloadResult,
+        type DownloadProgress,
+    } from "$lib/services/downloadService";
+    import { addToast } from "$lib/stores/toast";
 
     export let artistName: string;
 
@@ -38,7 +46,11 @@
 
     function handlePlayAll() {
         if (tracks.length > 0) {
-            playTracks(tracks, 0);
+            playTracks(tracks, 0, {
+                type: 'artist',
+                artistName: artistName,
+                displayName: artistName
+            });
         }
     }
 
@@ -52,6 +64,44 @@
 
     // Reload when artistName changes
     $: artistName, loadArtistData();
+
+    // Download state
+    let isDownloading = false;
+    let downloadProgress = "";
+
+    $: hasDownloadable = hasDownloadableTracks(tracks);
+
+    async function handleDownloadAll() {
+        if (isDownloading) return;
+
+        if (needsDownloadLocation()) {
+            addToast(
+                "Please configure a download location in Settings first",
+                "error",
+            );
+            return;
+        }
+
+        isDownloading = true;
+        downloadProgress = "Starting...";
+
+        try {
+            const result = await downloadTracks(
+                tracks,
+                (progress: DownloadProgress) => {
+                    downloadProgress = `${progress.current}/${progress.total}`;
+                },
+            );
+
+            showDownloadResult(result);
+        } catch (error) {
+            console.error("Download failed:", error);
+            addToast("Download failed unexpectedly", "error");
+        } finally {
+            isDownloading = false;
+            downloadProgress = "";
+        }
+    }
 </script>
 
 <div class="artist-detail">
@@ -62,7 +112,7 @@
         </div>
     {:else}
         <header class="artist-header">
-            <button class="back-btn" on:click={goToArtists}>
+            <button class="back-btn" on:click={goToArtists} aria-label="Go back to artists">
                 <svg
                     viewBox="0 0 24 24"
                     fill="currentColor"
@@ -104,6 +154,31 @@
                         </svg>
                         Play All
                     </button>
+
+                    {#if hasDownloadable}
+                        <button
+                            class="btn-secondary download-btn"
+                            on:click={handleDownloadAll}
+                            disabled={isDownloading}
+                        >
+                            {#if isDownloading}
+                                <div class="spinner-sm"></div>
+                                <span>{downloadProgress}</span>
+                            {:else}
+                                <svg
+                                    viewBox="0 0 24 24"
+                                    fill="currentColor"
+                                    width="24"
+                                    height="24"
+                                >
+                                    <path
+                                        d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"
+                                    />
+                                </svg>
+                                <span>Download All</span>
+                            {/if}
+                        </button>
+                    {/if}
                 </div>
             </div>
         </header>
@@ -129,7 +204,11 @@
             {#if activeTab === "albums"}
                 <AlbumGrid {albums} />
             {:else}
-                <TrackList {tracks} showAlbum={true} />
+            <TrackList 
+            {tracks} 
+            showAlbum={true}
+            playbackContext={{ type: 'artist', artistName, displayName: artistName }}
+        />
             {/if}
         </div>
     {/if}
@@ -295,6 +374,101 @@
     .artist-content {
         flex: 1;
         overflow-y: auto;
-        padding-bottom: calc(var(--player-height) + var(--spacing-md));
+    }
+
+    .btn-secondary {
+        background-color: transparent;
+        border: 1px solid var(--border-color);
+        color: var(--text-primary);
+        font-weight: 600;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-sm);
+        transition: all var(--transition-fast);
+        padding: var(--spacing-sm) var(--spacing-xl);
+        border-radius: var(--radius-full);
+        font-size: 1rem;
+    }
+
+    .btn-secondary:hover:not(:disabled) {
+        border-color: var(--text-primary);
+        transform: scale(1.05);
+    }
+
+    .btn-secondary:disabled {
+        opacity: 0.7;
+        cursor: not-allowed;
+    }
+
+    .spinner-sm {
+        width: 16px;
+        height: 16px;
+        border: 2px solid var(--bg-highlight);
+        border-top-color: var(--text-primary);
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+    }
+
+    /* ── Mobile ── */
+    @media (max-width: 768px) {
+        .artist-header {
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+            padding: var(--spacing-md);
+            gap: var(--spacing-md);
+        }
+
+        .back-btn {
+            top: var(--spacing-sm);
+            left: var(--spacing-sm);
+        }
+
+        .artist-avatar {
+            width: 120px;
+            height: 120px;
+        }
+
+        .artist-initial {
+            font-size: 2.5rem;
+        }
+
+        .artist-info {
+            align-items: center;
+        }
+
+        .artist-name {
+            font-size: 1.5rem;
+            word-break: break-word;
+        }
+
+        .artist-meta {
+            flex-wrap: wrap;
+            justify-content: center;
+            margin-bottom: var(--spacing-md);
+        }
+
+        .artist-actions {
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .play-all-btn,
+        .btn-secondary {
+            padding: var(--spacing-sm) var(--spacing-lg);
+            font-size: 0.875rem;
+            min-height: 44px;
+        }
+
+        .tabs {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .tab {
+            min-height: 44px;
+            white-space: nowrap;
+        }
     }
 </style>
