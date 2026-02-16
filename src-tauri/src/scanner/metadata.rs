@@ -210,9 +210,31 @@ fn extract_flac_metadata_fallback(path: &Path, _duration_hint: Option<i32>) -> O
                 .or_else(|| get_filename_without_ext(path));
             let artist = vorbis.and_then(|v| v.artist().map(|s| s[0].clone()));
             let album = vorbis.and_then(|v| v.album().map(|s| s[0].clone()));
-            let track_number = vorbis.and_then(|v| v.track().map(|n| n as i32));
-            let disc_number =
-                vorbis.and_then(|v| v.get("DISCNUMBER").and_then(|d| d[0].parse::<i32>().ok()));
+            // Extract track number,  "X/Y" fallback
+            let track_number = vorbis
+                .and_then(|v| v.track().map(|n| n as i32))
+                .or_else(|| {
+                    vorbis.and_then(|v| {
+                        v.get("TRACKNUMBER").and_then(|s| {
+                            s.iter().next().and_then(|num_str| {
+                                num_str.split('/')
+                                    .next()
+                                    .and_then(|num| num.trim().parse::<i32>().ok())
+                            })
+                        })
+                    })
+                });
+
+            // Extract disc number, "X/Y" fallback
+            let disc_number = vorbis.and_then(|v| {
+                v.get("DISCNUMBER").and_then(|s| {
+                    s.iter().next().and_then(|num_str| {
+                        num_str.split('/')
+                            .next()
+                            .and_then(|num| num.trim().parse::<i32>().ok())
+                    })
+                })
+            });
 
             // Extract picture
             let album_art = tag.pictures().next().map(|p| p.data.clone());
