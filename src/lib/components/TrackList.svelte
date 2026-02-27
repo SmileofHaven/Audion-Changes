@@ -27,7 +27,7 @@
     loadMoreTracks,
   } from "$lib/stores/library";
   import { pluginStore } from "$lib/stores/plugin-store";
-  import { goToAlbumDetail } from "$lib/stores/view";
+  import { goToAlbumDetail, goToArtistDetail } from "$lib/stores/view";
   import {
     canDownload,
     downloadTrack,
@@ -801,6 +801,26 @@
       goToAlbumDetail(track.album_id);
     }
   }
+
+  function handleArtistClick(e: MouseEvent) {
+    const artistButton = (e.target as HTMLElement).closest(".track-artist");
+    if (!artistButton) return;
+
+    e.stopPropagation();
+
+    const row = artistButton.closest(".track-row");
+    if (!row) return;
+
+    const trackId = parseInt(row.getAttribute("data-track-id") || "0");
+    const trackIndex = trackIndexMap.get(trackId);
+
+    if (trackIndex === undefined) return;
+
+    const track = sortedTracks[trackIndex];
+    if (track && track.artist) {
+      goToArtistDetail(track.artist);
+    }
+  }
 </script>
 
 <div class="track-list">
@@ -1019,7 +1039,7 @@
                   </div>
                 </div>
               </span>
-              <span class="col-title">
+              <div class="col-title">
                 <div class="title-row">
                   <span class="track-name truncate"
                     >{track.title || "Unknown Title"}</span
@@ -1061,10 +1081,12 @@
                     </span>
                   {/if}
                 </div>
-                <span class="track-artist truncate"
-                  >{track.artist || "Unknown Artist"}</span
+                <button
+                  class="track-artist truncate"
+                  on:click={handleArtistClick}
+                  >{track.artist || "Unknown Artist"}</button
                 >
-              </span>
+              </div>
               {#if showAlbum}
                 <button
                   class="col-album truncate"
@@ -1375,6 +1397,9 @@
     flex-direction: column;
     min-width: 0;
     justify-content: center;
+    gap: 1px;
+    height: 100%;
+    padding-top: 1.5px;
   }
 
   .title-row {
@@ -1388,6 +1413,8 @@
     font-size: 0.9375rem;
     font-weight: 500;
     color: var(--text-primary);
+    line-height: 1.2;
+    margin: 0;
   }
 
   .quality-tag {
@@ -1417,9 +1444,16 @@
   .track-artist {
     font-size: 0.8125rem;
     color: var(--text-secondary);
+    background: none;
+    border: none;
+    padding: 0;
+    margin: 0;
+    text-align: left;
+    max-width: fit-content;
+    line-height: 1.2;
   }
 
-  .track-artist:hover {
+  .track-artist:hover:not(:disabled) {
     color: var(--text-primary);
     text-decoration: underline;
     cursor: pointer;
@@ -1722,7 +1756,7 @@
     .list-body.mobile-playlist .track-artist {
       font-size: 0.75rem;
       color: var(--text-secondary);
-      margin-top: 2px;
+      margin-top: 0;
     }
 
     /* Duration compact */

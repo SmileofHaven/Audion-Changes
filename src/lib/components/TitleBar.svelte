@@ -85,8 +85,18 @@
         appWindow.isMaximized().then((m) => (isMaximized = m));
 
         // Listen for resize to update maximize state
-        const unlistenResize = appWindow.onResized(async () => {
-            isMaximized = await appWindow.isMaximized();
+        let _resizeTimer: ReturnType<typeof setTimeout> | null = null;
+        const unlistenResize = appWindow.onResized(() => {
+            // Debounce rapid resize events to avoid triggering reactive loops
+            if (_resizeTimer) clearTimeout(_resizeTimer);
+            _resizeTimer = setTimeout(async () => {
+                try {
+                    isMaximized = await appWindow.isMaximized();
+                } catch (e) {
+                    console.warn('[TitleBar] Failed to get maximize state:', e);
+                }
+                _resizeTimer = null;
+            }, 120);
         });
 
         const unsubscribeSearch = searchQuery.subscribe((value) => {
@@ -107,6 +117,10 @@
             unsubscribeNav();
             window.removeEventListener("keydown", handleGlobalKeydown);
             unlistenResize.then((f) => f());
+            if (_resizeTimer) {
+                clearTimeout(_resizeTimer);
+                _resizeTimer = null;
+            }
         };
     });
 </script>
@@ -474,10 +488,29 @@
     }
 
     /* Drag Regions */
+    /* Drag Regions */
+    /* Use data-tauri-drag-region attribute and explicit classes so macOS
+       WebKit will treat the area as draggable. Interactive elements inside
+       titlebar must be explicitly marked as no-drag to receive pointer events. */
+    [data-tauri-drag-region],
     .drag-region {
+        -webkit-app-region: drag;
+        app-region: drag;
         flex-grow: 1;
         height: 100%;
         min-width: 16px;
+    }
+
+    /* Interactive elements should not be draggable so clicks work on macOS */
+    .titlebar .left-controls,
+    .titlebar .window-controls,
+    .titlebar .nav-group,
+    .titlebar .search-input-wrapper,
+    .titlebar button,
+    .titlebar input,
+    .titlebar a {
+        -webkit-app-region: no-drag;
+        app-region: no-drag;
     }
 
     /* Search Bar */

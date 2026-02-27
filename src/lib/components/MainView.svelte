@@ -51,6 +51,32 @@
         $currentView.type,
     );
     import GlobalShortcuts from "./GlobalShortcuts.svelte";
+    import type { SectionKey } from "./SearchResults.svelte";
+
+    const SECTION_LABELS: Record<SectionKey, string> = {
+        tracks: "Tracks",
+        albums: "Albums",
+        artists: "Artists",
+        playlists: "Playlists",
+    };
+
+    let sectionOrder: SectionKey[] = ["tracks", "albums", "artists", "playlists"];
+    let hiddenSections = new Set<SectionKey>();
+
+    function moveSection(key: SectionKey, direction: -1 | 1) {
+        const idx = sectionOrder.indexOf(key);
+        const newIdx = idx + direction;
+        if (newIdx < 0 || newIdx >= sectionOrder.length) return;
+        const next = [...sectionOrder];
+        [next[idx], next[newIdx]] = [next[newIdx], next[idx]];
+        sectionOrder = next;
+    }
+
+    function toggleSection(key: SectionKey) {
+        const next = new Set(hiddenSections);
+        next.has(key) ? next.delete(key) : next.add(key);
+        hiddenSections = next;
+    }
 
     // Mobile search bar state
     let mobileSearchInput = "";
@@ -575,11 +601,48 @@
 
     {#if isSearching}
         <div class="view-container">
-            <header class="view-header">
+            <header class="view-header search-view-header">
                 <h1>Search Results</h1>
+                {#if $searchResults.hasResults}
+                    <div class="results-pills">
+                        {#each sectionOrder as key, i (key)}
+                            {@const hasResults =
+                                (key === "tracks"    && $searchResults.tracks.length > 0) ||
+                                (key === "albums"    && $searchResults.albums.length > 0) ||
+                                (key === "artists"   && $searchResults.artists.length > 0) ||
+                                (key === "playlists" && ($searchResults.playlists?.length ?? 0) > 0)}
+                            {#if hasResults}
+                                {@const count =
+                                    key === "tracks"    ? $searchResults.tracks.length :
+                                    key === "albums"    ? $searchResults.albums.length :
+                                    key === "artists"   ? $searchResults.artists.length :
+                                    ($searchResults.playlists?.length ?? 0)}
+                                {@const visibleKeys = sectionOrder.filter(k =>
+                                    (k === "tracks"    && $searchResults.tracks.length > 0) ||
+                                    (k === "albums"    && $searchResults.albums.length > 0) ||
+                                    (k === "artists"   && $searchResults.artists.length > 0) ||
+                                    (k === "playlists" && ($searchResults.playlists?.length ?? 0) > 0)
+                                )}
+                                {@const visibleIdx = visibleKeys.indexOf(key)}
+                                <div class="pill-wrapper">
+                                        <!-- reorder arrows removed for simpler pill layout -->
+                                    <button
+                                        class="section-pill"
+                                        class:pill-active={!hiddenSections.has(key)}
+                                        class:pill-inactive={hiddenSections.has(key)}
+                                        on:click={() => toggleSection(key)}
+                                    >
+                                        <span class="pill-label">{SECTION_LABELS[key]}</span>
+                                        <span class="pill-count">{count}</span>
+                                    </button>
+                                </div>
+                            {/if}
+                        {/each}
+                    </div>
+                {/if}
             </header>
             <div class="view-content">
-                <SearchResults />
+                <SearchResults {sectionOrder} {hiddenSections} />
             </div>
         </div>
     {:else if $currentView.type === "tracks"}
@@ -855,6 +918,65 @@
         font-size: 0.875rem;
         color: var(--text-secondary);
         margin-top: var(--spacing-xs);
+    }
+
+    .search-view-header {
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-lg);
+        flex-wrap: wrap;
+    }
+
+    .search-view-header h1 {
+        line-height: 1;
+        margin: 0;
+    }
+
+    .results-pills {
+        display: flex;
+        gap: var(--spacing-xs);
+        flex-wrap: wrap;
+        align-items: center;
+    }
+
+    .pill-wrapper {
+        display: flex;
+        align-items: center;
+    }
+
+    .section-pill {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 4px;
+        border-radius: var(--radius-full);
+        border: 1px solid transparent;
+        font-size: 0.9375rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background-color 0.15s, color 0.15s, border-color 0.15s, opacity 0.15s;
+    }
+
+    .pill-active {
+        background-color: var(--accent-primary);
+        color: var(--text-primary);
+        border-color: var(--accent-primary);
+    }
+
+    .pill-inactive {
+        background-color: var(--bg-elevated);
+        color: var(--text-subdued);
+        border-color: var(--border-color);
+        opacity: 0.6;
+    }
+
+    .pill-inactive:hover { opacity: 1; color: var(--text-secondary); }
+
+    .pill-count {
+        font-size: 0.75rem;
+        opacity: 0.75;
+        font-weight: 400;
+        padding-right: 6px;
     }
 
     /* ===== Mobile Library Header (search + tabs) ===== */
