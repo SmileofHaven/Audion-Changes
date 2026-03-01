@@ -318,6 +318,7 @@
               class="mode-btn"
               class:active={$theme.mode === "dark"}
               on:click={() => handleModeChange("dark")}
+              aria-label="Dark theme"
             >
               <svg
                 viewBox="0 0 24 24"
@@ -335,6 +336,7 @@
               class="mode-btn"
               class:active={$theme.mode === "light"}
               on:click={() => handleModeChange("light")}
+              aria-label="Light theme"
             >
               <svg
                 viewBox="0 0 24 24"
@@ -352,6 +354,7 @@
               class="mode-btn"
               class:active={$theme.mode === "system"}
               on:click={() => handleModeChange("system")}
+              aria-label="System theme"
             >
               <svg
                 viewBox="0 0 24 24"
@@ -382,6 +385,7 @@
                 style="--swatch-color: {preset.color}"
                 on:click={() => handleAccentChange(preset.color)}
                 title={preset.name}
+                aria-label="Accent color {preset.name} ({preset.color})"
               >
                 {#if $theme.accentColor === preset.color}
                   <svg
@@ -411,6 +415,7 @@
                   class:active={$theme.accentColor === color}
                   style="--swatch-color: {color}"
                   on:click={() => handleAccentChange(color)}
+                  aria-label="Custom accent color {color}"
                 >
                   {#if $theme.accentColor === color}
                     <svg
@@ -438,6 +443,7 @@
               type="color"
               bind:value={customColorInput}
               class="color-picker"
+              aria-label="Pick a custom color"
             />
             <input
               type="text"
@@ -445,8 +451,13 @@
               placeholder="#1DB954"
               class="color-text"
               maxlength="7"
+              aria-label="Hex color code"
             />
-            <button class="add-btn" on:click={handleCustomColorAdd}>
+            <button
+              class="add-btn"
+              on:click={handleCustomColorAdd}
+              aria-label="Add custom color"
+            >
               Add
             </button>
           </div>
@@ -466,7 +477,11 @@
             >
               {$appSettings.downloadLocation || "No download location set"}
             </div>
-            <button class="selector-btn" on:click={handleSetDownloadLocation}>
+            <button
+              class="selector-btn"
+              on:click={handleSetDownloadLocation}
+              aria-label="Change download location"
+            >
               Change
             </button>
           </div>
@@ -480,6 +495,7 @@
               class="mode-btn"
               class:active={$appSettings.startMode === "normal"}
               on:click={() => appSettings.setStartMode("normal")}
+              aria-label="Start window in normal mode"
             >
               <svg
                 viewBox="0 0 24 24"
@@ -497,6 +513,7 @@
               class="mode-btn"
               class:active={$appSettings.startMode === "maximized"}
               on:click={() => appSettings.setStartMode("maximized")}
+              aria-label="Start window maximized"
             >
               <svg
                 viewBox="0 0 24 24"
@@ -512,6 +529,7 @@
               class="mode-btn"
               class:active={$appSettings.startMode === "minimized"}
               on:click={() => appSettings.setStartMode("minimized")}
+              aria-label="Start window minimized"
             >
               <svg
                 viewBox="0 0 24 24"
@@ -539,6 +557,8 @@
               class:active={$appSettings.showDiscord}
               on:click={() =>
                 appSettings.setShowDiscord(!$appSettings.showDiscord)}
+              role="switch"
+              aria-checked={$appSettings.showDiscord}
               aria-label="Toggle Discord Button"
             >
               <div class="toggle-handle"></div>
@@ -558,6 +578,8 @@
               class="toggle-btn"
               class:active={$appSettings.autoplay}
               on:click={() => appSettings.setAutoplay(!$appSettings.autoplay)}
+              role="switch"
+              aria-checked={$appSettings.autoplay}
               aria-label="Toggle Autoplay"
             >
               <div class="toggle-handle"></div>
@@ -572,6 +594,7 @@
               class="mode-btn"
               class:active={$appSettings.audioBackend === "auto"}
               on:click={() => appSettings.setAudioBackend("auto")}
+              aria-label="Auto audio backend"
             >
               <span>Auto</span>
             </button>
@@ -579,6 +602,7 @@
               class="mode-btn"
               class:active={$appSettings.audioBackend === "native"}
               on:click={() => appSettings.setAudioBackend("native")}
+              aria-label="Native audio backend"
             >
               <span>Native</span>
             </button>
@@ -586,6 +610,7 @@
               class="mode-btn"
               class:active={$appSettings.audioBackend === "html5"}
               on:click={() => appSettings.setAudioBackend("html5")}
+              aria-label="HTML5 audio backend"
             >
               <span>HTML5</span>
             </button>
@@ -616,7 +641,11 @@
                 >Changing the audio backend requires a refresh to take effect.</span
               >
             </div>
-            <button class="selector-btn refresh-btn" on:click={handleRefresh}>
+            <button
+              class="selector-btn refresh-btn"
+              on:click={handleRefresh}
+              aria-label="Refresh now"
+            >
               Refresh Now
             </button>
           </div>
@@ -642,6 +671,7 @@
               class="selector-btn"
               on:click={handleSyncCovers}
               disabled={isSyncingCovers}
+              aria-label="Sync cover files"
             >
               {#if isSyncingCovers}
                 Syncing...
@@ -713,6 +743,7 @@
               class="selector-btn"
               on:click={handleMergeDuplicateCovers}
               disabled={isMergingCovers}
+              aria-label="Merge duplicate covers"
             >
               {#if isMergingCovers}
                 Merging...
@@ -789,6 +820,8 @@
               class="toggle-btn"
               class:active={$equalizer.enabled}
               on:click={() => equalizer.setEnabled(!$equalizer.enabled)}
+              role="switch"
+              aria-checked={$equalizer.enabled}
               aria-label="Toggle Equalizer"
             >
               <div class="toggle-handle"></div>
@@ -804,6 +837,7 @@
               value={$equalizer.currentPreset || ""}
               on:change={(e) => equalizer.applyPreset(e.currentTarget.value)}
               disabled={!$equalizer.enabled}
+              aria-label="Equalizer preset"
             >
               <option value="" disabled>Custom</option>
               {#each EQ_PRESETS as preset}
@@ -815,6 +849,7 @@
               on:click={() => equalizer.reset()}
               disabled={!$equalizer.enabled}
               title="Reset to Flat"
+              aria-label="Reset equalizer to flat"
             >
               Reset
             </button>
@@ -874,6 +909,8 @@
               class:active={$appSettings.developerMode}
               on:click={() =>
                 appSettings.setDeveloperMode(!$appSettings.developerMode)}
+              role="switch"
+              aria-checked={$appSettings.developerMode}
               aria-label="Toggle Developer Mode"
             >
               <div class="toggle-handle"></div>
@@ -895,7 +932,11 @@
                 references. This action cannot be undone.
               </p>
             </div>
-            <button class="danger-btn" on:click={openResetModal}>
+            <button
+              class="danger-btn"
+              on:click={openResetModal}
+              aria-label="Reset database"
+            >
               Reset Database
             </button>
           </div>
@@ -914,6 +955,7 @@
             <button
               class="update-btn"
               on:click={() => (showUpdatePopup = true)}
+              aria-label="View update"
             >
               Update Available
             </button>
@@ -943,6 +985,7 @@
     on:keydown={(e) => e.key === "Escape" && closeResetModal()}
     role="button"
     tabindex="0"
+    aria-label="Close modal"
   >
     <div
       class="modal-content"
@@ -950,10 +993,15 @@
       on:keydown|stopPropagation
       role="dialog"
       aria-modal="true"
+      aria-labelledby="reset-dialog-title"
     >
       <div class="modal-header">
-        <h2>Reset Database</h2>
-        <button class="modal-close" on:click={closeResetModal}>
+        <h2 id="reset-dialog-title">Reset Database</h2>
+        <button
+          class="modal-close"
+          on:click={closeResetModal}
+          aria-label="Close"
+        >
           <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor">
             <path
               d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"
@@ -964,7 +1012,13 @@
 
       <div class="modal-body">
         <div class="warning-box">
-          <svg viewBox="0 0 24 24" width="48" height="48" fill="currentColor">
+          <svg
+            viewBox="0 0 24 24"
+            width="48"
+            height="48"
+            fill="currentColor"
+            aria-hidden="true"
+          >
             <path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" />
           </svg>
           <p>This will permanently delete:</p>
@@ -987,11 +1041,12 @@
             bind:value={resetConfirmText}
             placeholder="DELETE CONFIRM"
             disabled={isResetting}
+            aria-label="Confirmation text"
           />
         </div>
 
         {#if resetError}
-          <p class="error-message">{resetError}</p>
+          <p class="error-message" role="alert">{resetError}</p>
         {/if}
       </div>
 
@@ -1000,6 +1055,7 @@
           class="cancel-btn"
           on:click={closeResetModal}
           disabled={isResetting}
+          aria-label="Cancel reset"
         >
           Cancel
         </button>
@@ -1007,6 +1063,7 @@
           class="confirm-danger-btn"
           on:click={handleResetDatabase}
           disabled={isResetting || resetConfirmText !== "DELETE CONFIRM"}
+          aria-label="Confirm reset"
         >
           {#if isResetting}
             Resetting...
@@ -1946,28 +2003,119 @@
     }
   }
 
-  /* ── Mobile ── */
+  /* MOBILE-SPECIFIC ENHANCEMENTS */
   @media (max-width: 768px) {
+    /* Layout Spacing Adjustments */
+    .view-header {
+      padding: var(--spacing-md) var(--spacing-sm);
+    }
+
     .view-header h1 {
-      font-size: 1.5rem;
       padding-left: var(--spacing-sm);
     }
 
-    .settings-content {
-      padding: var(--spacing-sm);
-      /* Preserve bottom padding for fixed bottom nav + mini player + margin */
-      padding-bottom: calc(
-        var(--mobile-bottom-inset, 130px) + var(--spacing-xl)
-      );
-    }
-
     .settings-container {
-      padding: 0;
+      padding: 0 var(--spacing-sm);
     }
 
     .settings-section {
-      padding: var(--spacing-md);
       margin-bottom: var(--spacing-md);
+      padding: var(--spacing-md);
+      border-radius: var(--radius-md);
+    }
+
+    .section-title {
+      margin-bottom: var(--spacing-md);
+      padding-bottom: var(--spacing-xs);
+    }
+
+    .setting-item {
+      margin-bottom: var(--spacing-md);
+    }
+
+    /* Ensure all interactive elements are at least 44x44 */
+    button,
+    .mode-btn,
+    .color-swatch,
+    .selector-btn,
+    .add-btn,
+    .danger-btn,
+    .toggle-btn,
+    .reset-btn,
+    .preset-select {
+      min-height: 44px;
+      min-width: 44px;
+    }
+
+    /* Mode buttons – allow wrapping and ensure touchable */
+    .theme-modes {
+      flex-wrap: wrap;
+      gap: var(--spacing-sm);
+    }
+
+    .mode-btn {
+      flex: 1 0 calc(50% - var(--spacing-sm));
+      min-width: 120px;
+      padding: var(--spacing-md);
+    }
+
+    /* Color grid – adjust columns to maintain touchable swatches */
+    .color-grid {
+      grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
+    }
+
+    /* Preset selector – stack on small screens */
+    .preset-selector {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .preset-select {
+      max-width: none;
+      width: 100%;
+    }
+
+    .reset-btn {
+      width: 100%;
+    }
+
+    /* Toggle switch – increase hit area */
+    .toggle-btn {
+      width: 56px;
+      height: 32px;
+    }
+
+    .toggle-handle {
+      width: 24px;
+      height: 24px;
+      top: 3px;
+      left: 3px;
+    }
+
+    .toggle-btn.active .toggle-handle {
+      transform: translateX(26px);
+    }
+
+    /* Equalizer sliders – more touch-friendly */
+    .eq-slider-container {
+      height: 120px;
+    }
+
+    .eq-slider {
+      width: 120px;
+    }
+
+    /* Modal buttons – ensure touchable */
+    .cancel-btn,
+    .confirm-danger-btn {
+      min-height: 48px;
+    }
+
+    /* Adjust bottom padding for content */
+    .settings-content {
+      padding-bottom: calc(
+        var(--mobile-bottom-inset, 130px) + var(--spacing-xl)
+      );
     }
   }
 </style>
