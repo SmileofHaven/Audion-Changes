@@ -357,7 +357,15 @@ equalizer.subscribe((state) => {
 // =============================================================================
 // BACKEND INITIALIZATION
 // =============================================================================
+
+let audioBackendReady: Promise<void> | null = null;
+
 export async function initAudioBackend(): Promise<void> {
+    audioBackendReady = _initAudioBackend();
+    await audioBackendReady;
+}
+
+async function _initAudioBackend(): Promise<void> {
     console.log('[Player] Initializing audio backend');
 
     // Check if we should use native audio
@@ -603,6 +611,7 @@ function updateMediaSessionPosition(): void {
 
 // Play a specific track
 export async function playTrack(track: Track, skipLocalSrc = false, startTime = 0): Promise<void> {
+    if (audioBackendReady) await audioBackendReady;
     const previousTrackObj = get(currentTrack);
     const sessionId = ++currentSessionId;
 
