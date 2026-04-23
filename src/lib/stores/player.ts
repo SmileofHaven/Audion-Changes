@@ -22,6 +22,7 @@ import { pluginStore } from '$lib/stores/plugin-store';
 import { recordTrackPlay } from '$lib/stores/activity';
 import { submitListenbrainzListen } from '$lib/api/tauri';
 import { activeRemoteDevice } from '$lib/stores/websocket';
+import type { MediaPlayerClass } from 'dashjs';
 
 // =============================================================================
 // NATIVE AUDIO BACKEND
@@ -61,7 +62,7 @@ let html5EqGainNode: GainNode | null = null;
 let lastEqBypassWarningHost: string | null = null;
 
 // dash.js player instance for Hi-Res DASH/MPD streaming
-let dashPlayer: any | null = null;
+let dashPlayer: MediaPlayerClass | null = null;
 
 // Track which backend is currently active ('native', 'html5', 'remote', or 'none')
 export type ActiveBackend = 'native' | 'html5' | 'remote' | 'none';
@@ -81,22 +82,21 @@ function classifyAudioPath(path: string): AudioPathKind {
 }
 
 // Lazily load dash.js and create a player instance
-async function getDashPlayer(): Promise<any> {
-    if (typeof window === 'undefined') throw new Error('No window');
-
-    // Load dash.js from CDN if not already loaded
-    if (!(window as any).dashjs) {
-        await new Promise<void>((resolve, reject) => {
-            const script = document.createElement('script');
-            script.src = 'https://cdnjs.cloudflare.com/ajax/libs/dashjs/4.7.4/dash.all.min.js';
-            script.onload = () => resolve();
-            script.onerror = () => reject(new Error('Failed to load dash.js'));
-            document.head.appendChild(script);
-        });
+/**
+ * dynamically load the local dashjs
+ */
+async function getDashPlayer(): Promise<typeof dashjs> {
+    if (typeof window === 'undefined') {
+        throw new Error('dash.js cannot be initialized in a non-browser environment');
     }
 
-    return (window as any).dashjs;
+    const dashjs = await import('dashjs');
+    
+    return (dashjs as any).default || dashjs;
 }
+
+// match DASH_PROXY_PORT in network.rs
+const DASH_PROXY_PORT = 9876;
 
 async function playWithDash(blobUrl: string, audioElement: HTMLAudioElement): Promise<void> {
 
@@ -106,6 +106,7 @@ async function playWithDash(blobUrl: string, audioElement: HTMLAudioElement): Pr
     }
 
     const mpdText = await fetch(blobUrl).then(r => r.text());
+    // revoke after reading
     URL.revokeObjectURL(blobUrl);
     const bytes = new TextEncoder().encode(mpdText);
     const binary = Array.from(bytes).reduce((acc, byte) => acc + String.fromCharCode(byte), '');
@@ -113,11 +114,36 @@ async function playWithDash(blobUrl: string, audioElement: HTMLAudioElement): Pr
 
     const dashjs = await getDashPlayer();
     dashPlayer = dashjs.MediaPlayer().create();
-    dashPlayer.initialize(audioElement, dataUrl, true);
+
+    // use RequestModifier to route all outgoing cdn requests through tauri local proxy
+    // do only after dash.js has already expanded all SegmentTemplate variables
+    // $Number$, $Time$, $Bandwidth$
+    // modifyRequestURL() is triggered right before each XHR request is sent
+    // so we can proxy the actual request url instead of dealing with templates
+    dashPlayer.extend('RequestModifier', function () {
+        return {
+            modifyRequestURL(url: string): string {
+                // only proxy external cdn urls
+                if (url.startsWith('http://localhost') || url.startsWith('data:')) {
+                    return url;
+                }
+                if (url.startsWith('http://') || url.startsWith('https://')) {
+                    return `http://localhost:${DASH_PROXY_PORT}/?url=${encodeURIComponent(url)}`;
+                }
+                return url;
+            },
+            modifyRequestHeader(xhr: XMLHttpRequest): XMLHttpRequest {
+                return xhr;
+            }
+        };
+    }, true);
+
     dashPlayer.on(dashjs.MediaPlayer.events.ERROR, (e: any) => {
         console.error('[Player] dash.js error:', e);
         addToast(`Hi-Res playback error: ${e.error?.message || 'Unknown error'}`, 'error');
     });
+
+    dashPlayer.initialize(audioElement, dataUrl, true);
 }
 
 function getHtml5Audio(): HTMLAudioElement {
@@ -1266,8 +1292,15 @@ export async function playTrack(track: Track, skipLocalSrc = false, startTime = 
             if (finalKind === 'blob') {
                 audio = await prepareHtml5AudioForPath(audio, audioPath);
                 audio.volume = sliderToAudioVolume(get(volume));
+                // set backend early
+                activeBackend.set('html5');
 
                 await playWithDash(audioPath, audio);
+
+                if (startTime > 0 && dashPlayer) {
+                    (dashPlayer as any).seek(startTime);
+                }
+
                 console.log('[Player] dash.js DASH streaming started:', track.title);
             } else {
                 // Resolve playlist-format URLs (.m3u, .pls, .m3u8) to direct stream URLs
@@ -1293,9 +1326,8 @@ export async function playTrack(track: Track, skipLocalSrc = false, startTime = 
                 }
 
                 console.log('[Player] HTML5 streaming started:', track.title);
+                activeBackend.set('html5');
             }
-
-            activeBackend.set('html5');
         } else {
             if (!audioPath) {
                 throw new Error('No local audio path found for track');

@@ -483,6 +483,8 @@ pub fn run() {
                 tracing::info!("System tray initialized");
             }
 
+            // start the DASH segment proxy on localhost
+            commands::network::start_dash_proxy();
             tracing::info!("App setup complete");
             Ok(())
         })

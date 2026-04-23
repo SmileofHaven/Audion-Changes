@@ -101,3 +101,162 @@ pub async fn proxy_fetch_bytes(url: String) -> Result<String, String> {
 
     Ok(STANDARD.encode(bytes))
 }
+
+/// port the DASH segment proxy HTTP server listens on.
+/// must match PROXY_PORT in player.ts.
+pub const DASH_PROXY_PORT: u16 = 9876;
+
+/// create a HTTP server on localhost:DASH_PROXY_PORT that proxies DASH
+/// segment requests through rust's native HTTP
+/// frontend registers a dash.js RequestModifier that rewrites urls at request time.
+
+pub fn start_dash_proxy() {
+    tauri::async_runtime::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = match TcpListener::bind(("127.0.0.1", DASH_PROXY_PORT)).await {
+            Ok(l) => {
+                tracing::info!("[DashProxy] Listening on 127.0.0.1:{}", DASH_PROXY_PORT);
+                l
+            }
+            Err(e) => {
+                tracing::error!("[DashProxy] Failed to bind port {}: {}", DASH_PROXY_PORT, e);
+                return;
+            }
+        };
+
+        // shared reqwest client
+        let client = reqwest::Client::builder()
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .build()
+            .expect("reqwest client");
+        let client = std::sync::Arc::new(client);
+
+        loop {
+            let (mut socket, _addr) = match listener.accept().await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("[DashProxy] Accept error: {}", e);
+                    continue;
+                }
+            };
+
+            let client = client.clone();
+
+            tokio::spawn(async move {
+                // read HTTP request headers
+                let mut buf = vec![0u8; 8192];
+                let n = match socket.read(&mut buf).await {
+                    Ok(n) if n > 0 => n,
+                    _ => return,
+                };
+
+                let raw = match std::str::from_utf8(&buf[..n]) {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+
+                // extract request path from "GET /path HTTP/1.1"
+                let path = raw
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("/");
+
+                // dash.js may send OPTIONS before the real GET
+                if raw.starts_with("OPTIONS") {
+                    let resp = "HTTP/1.1 204 No Content\r\n\
+                        Access-Control-Allow-Origin: *\r\n\
+                        Access-Control-Allow-Methods: GET, OPTIONS\r\n\
+                        Access-Control-Allow-Headers: *\r\n\
+                        Content-Length: 0\r\n\r\n";
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                    return;
+                }
+
+                // parse ?url= query param
+                let target_url = path
+                    .split_once('?')
+                    .and_then(|(_, qs)| {
+                        qs.split('&').find_map(|pair| {
+                            let (k, v) = pair.split_once('=')?;
+                            if k == "url" { Some(v.to_owned()) } else { None }
+                        })
+                    })
+                    .and_then(|encoded| {
+                        urlencoding::decode(&encoded).ok().map(|s| s.into_owned())
+                    });
+
+                let Some(url) = target_url else {
+                    let resp = "HTTP/1.1 400 Bad Request\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 17\r\n\r\nMissing url param";
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                    return;
+                };
+
+                // log the path portion
+                tracing::debug!("[DashProxy] Fetching: {}", &url[..url.find('?').unwrap_or(url.len())]);
+
+                // fetch the segment
+                let result = client
+                    .get(&url)
+                    .header("Accept", "*/*")
+                    .header("Accept-Language", "en-US,en;q=0.9")
+                    .send()
+                    .await;
+
+                match result {
+                    Ok(resp) if resp.status().is_success() => {
+                        let status = resp.status().as_u16();
+                        let content_type = resp
+                            .headers()
+                            .get(reqwest::header::CONTENT_TYPE)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("application/octet-stream")
+                            .to_owned();
+
+                        match resp.bytes().await {
+                            Ok(bytes) => {
+                                let header = format!(
+                                    "HTTP/1.1 {} OK\r\n\
+                                     Access-Control-Allow-Origin: *\r\n\
+                                     Content-Type: {}\r\n\
+                                     Content-Length: {}\r\n\r\n",
+                                    status,
+                                    content_type,
+                                    bytes.len()
+                                );
+                                let _ = socket.write_all(header.as_bytes()).await;
+                                let _ = socket.write_all(&bytes).await;
+                            }
+                            Err(e) => {
+                                let msg = format!("Body error: {e}");
+                                let resp = format!(
+                                    "HTTP/1.1 502 Bad Gateway\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
+                                    msg.len(), msg
+                                );
+                                let _ = socket.write_all(resp.as_bytes()).await;
+                            }
+                        }
+                    }
+                    Ok(resp) => {
+                        let msg = format!("Upstream: {}", resp.status());
+                        let response = format!(
+                            "HTTP/1.1 502 Bad Gateway\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
+                            msg.len(), msg
+                        );
+                        let _ = socket.write_all(response.as_bytes()).await;
+                    }
+                    Err(e) => {
+                        let msg = format!("Fetch error: {e}");
+                        let response = format!(
+                            "HTTP/1.1 502 Bad Gateway\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
+                            msg.len(), msg
+                        );
+                        let _ = socket.write_all(response.as_bytes()).await;
+                    }
+                }
+            });
+        }
+    });
+}
