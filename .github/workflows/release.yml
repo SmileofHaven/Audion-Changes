@@ -327,7 +327,33 @@ jobs:
           # Inject wrapper that auto-detects GPU environment at runtime
           cat > squashfs-root/AppRun-real << 'WRAPPER_EOF'
           #!/bin/bash
-          HERE="$(dirname "$(readlink -f "${0}")")"
+          # The AppImage runtime sets $APPDIR (and $APPIMAGE) itself, before
+          # it ever invokes AppRun, as part of mounting the squashfs — that
+          # value is correct regardless of what a launcher wrapper does to
+          # argv[0]/$0. Trust an inherited APPDIR first.
+          #
+          # Only fall back to recomputing HERE if APPDIR wasn't inherited
+          # (e.g. a very old runtime). Note /proc/self/exe is NOT usable
+          # here: for a shell script it resolves to the bash interpreter's
+          # own path, not this script's location — that's what caused the
+          # false-positive "could not resolve" failure with the previous
+          # version of this wrapper.
+          if [ -n "$APPDIR" ] && [ -d "$APPDIR/usr/bin" ]; then
+            HERE="$APPDIR"
+          else
+            HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          fi
+
+          # If HERE still isn't an absolute path pointing at a real AppDir,
+          # fail loud here instead of letting WebKit surface a confusing
+          # "No such file or directory" several layers down.
+          if [[ "$HERE" != /* ]] || [ ! -d "$HERE/usr/bin" ]; then
+            echo "Audion: could not resolve the AppImage's own directory (got '$HERE')." >&2
+            echo "This usually means the AppImage was launched through a wrapper" >&2
+            echo "(e.g. AppImageLauncher's binfmt-bypass) that altered argv[0]." >&2
+            echo "Try running the AppImage directly: ./Audion*.AppImage" >&2
+            exit 1
+          fi
 
           # ---------------------------------------------------------------------------
           # GPU / WebKit environment auto-detection
@@ -337,6 +363,16 @@ jobs:
           # APPDIR must be set so WebKit can find its helper processes (WebKitNetworkProcess etc.)
           export APPDIR="$HERE"
 
+          # Some WebKitGTK builds resolve the WebKitNetworkProcess/WebKitWebProcess
+          # helper path relative to the process's *current working directory*,
+          # not (only) $APPDIR — if cwd is anything else (e.g. left over from
+          # AppImageLauncher's exec chain), WebKit ends up trying a bogus
+          # "./lib/.../WebKitNetworkProcess" path. Force cwd to the AppDir.
+          cd "$HERE" || {
+            echo "Audion: failed to cd into AppDir '$HERE'" >&2
+            exit 1
+          }
+
           # Always disable dmabuf renderer — it is the most common cause of blank screens on Mesa/NVIDIA
           export WEBKIT_DISABLE_DMABUF_RENDERER=1
 
@@ -344,6 +380,28 @@ jobs:
           # This prevents "undefined symbol: g_task_set_static_name" from libgvfscommon.so
           export GIO_USE_VFS=local
           export GIO_MODULE_DIR="$HERE/usr/lib/gio/modules"
+
+          # Make the BUNDLED shared libraries take priority over whatever's on
+          # the host system. If a previous ldd check (in the diagnostic dump
+          # below) shows a dependency resolving against the wrong version on
+          # the user's machine, this is what fixes it — without it, the
+          # dynamic linker searches the host's own library paths first and
+          # the bundled webkit2gtk-4.1 libs never even get considered for
+          # anything except the exact directory WebKit hardcodes.
+          export LD_LIBRARY_PATH="$HERE/usr/lib/x86_64-linux-gnu:$HERE/usr/lib:${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+          # WebKitGTK's UIProcess honors WEBKIT_EXEC_PATH as an override for
+          # where it looks for WebKitNetworkProcess/WebKitWebProcess, IF the
+          # running libwebkit2gtk build actually checks it (not all do — an
+          # earlier manual test of this alone showed no effect, which either
+          # means this webkit2gtk build ignores it, or it was shadowed by
+          # something else; setting it here costs nothing and the diagnostic
+          # dump below will show its final value so we can tell which).
+          export WEBKIT_EXEC_PATH="$HERE/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1"
+
+          # XDG paths, in case GTK/GIO schema or MIME lookups are also
+          # falling back to the host and pulling in mismatched versions.
+          export XDG_DATA_DIRS="$HERE/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 
           # Wayland detection — prefer X11 fallback for WebKitGTK 4.x stability
           if [ -n "$WAYLAND_DISPLAY" ] && [ -z "$FORCE_WAYLAND" ]; then
@@ -365,10 +423,189 @@ jobs:
             BIN=$(find "$HERE/usr/bin" -type f -executable | head -1)
           fi
 
-          exec "$BIN" "$@"
+          # ---------------------------------------------------------------------------
+          # Full runtime diagnostic dump — printed unconditionally, every launch,
+          # right before we hand off to the real binary. This exists so a failed
+          # launch on someone else's machine is self-contained: everything we've
+          # had to debug by hand across several rounds (argv0/APPDIR mangling,
+          # cwd, the usr/lib vs lib path split, whether the bundled WebKit helper
+          # binaries' shared-lib deps resolve on THEIR system, and now the raw
+          # execve/openat syscalls themselves if strace is available) is captured
+          # from one run, written to disk, with its path printed so it survives
+          # even if terminal scrollback doesn't.
+          # ---------------------------------------------------------------------------
+          DIAG_OUT="${TMPDIR:-/tmp}/audion-launch-diagnostics-$$.log"
+          {
+            echo "===== Audion launch diagnostics ====="
+            echo "date: $(date -u --iso-8601=seconds 2>&1)"
+            echo "uname: $(uname -a 2>&1)"
+            echo "argv[0]: $0"
+            echo "BASH_SOURCE[0]: ${BASH_SOURCE[0]}"
+            echo "inherited \$APPDIR (pre-override): ${APPDIR:-<unset>}"
+            echo "resolved HERE: $HERE"
+            echo "cwd (post-cd): $(pwd)"
+            echo "selected BIN: ${BIN:-<none found>}"
+            echo
+            echo "--- Effective env vars we set ---"
+            for v in APPDIR LD_LIBRARY_PATH WEBKIT_EXEC_PATH WEBKIT_DISABLE_DMABUF_RENDERER \
+                     GIO_USE_VFS GIO_MODULE_DIR XDG_DATA_DIRS GDK_BACKEND QT_QPA_PLATFORM \
+                     WAYLAND_DISPLAY DISPLAY ALSA_CONFIG_PATH; do
+              echo "  $v=${!v:-<unset>}"
+            done
+            echo
+            echo "--- glibc / dynamic linker (cross-distro version skew check) ---"
+            ldd --version 2>&1 | head -1
+            echo
+            echo "--- usr/lib webkit2gtk-4.1 path ---"
+            ls -la "$HERE/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1" 2>&1 | head -20
+            echo "--- root lib webkit2gtk-4.1 path (symlink) ---"
+            ls -la "$HERE/lib/x86_64-linux-gnu/webkit2gtk-4.1" 2>&1 | head -20
+            echo
+            echo "--- WebKitNetworkProcess: existence + shared-lib resolution on THIS machine ---"
+            WKNP="$HERE/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/WebKitNetworkProcess"
+            if [ -e "$WKNP" ]; then
+              echo "found at: $WKNP"
+              echo "file: $(file -b "$WKNP" 2>&1)"
+              echo "ldd output (a missing '=> not found' line here IS the bug, if present):"
+              ldd "$WKNP" 2>&1 | sed 's/^/  /'
+            else
+              echo "NOT FOUND at $WKNP — bundling step did not ship it, or AppDir layout differs."
+            fi
+            echo "======================================"
+          } | tee "$DIAG_OUT" >&2
+          echo "Full diagnostics also written to: $DIAG_OUT" >&2
+
+          # ---------------------------------------------------------------------------
+          # GPU detection + software-rendering fallback.
+          #
+          # Two layers, cheapest first:
+          #  1. A fast pre-check: does an accessible DRI render node exist at
+          #     all? If not, there's no point even attempting hardware
+          #     rendering — force software mode immediately, no visible
+          #     crash/flash for the user.
+          #  2. If a render node DOES exist but WebKit still fails to get an
+          #     EGL context (permissions, Zink issues, a render node that
+          #     exists but doesn't actually work — exactly what happened in
+          #     testing on this Fedora box), the first launch attempt is
+          #     captured rather than exec'd directly, so on an EGL failure we
+          #     can relaunch once with software rendering forced instead of
+          #     leaving the user stuck on a raw EGL_BAD_PARAMETER crash.
+          #
+          # This keeps hardware acceleration for everyone whose GPU actually
+          # works, and only pays the software-rendering performance cost for
+          # machines where hardware rendering was never going to work anyway.
+          # ---------------------------------------------------------------------------
+          EGL_FAILURE_PATTERN='Could not create default EGL display|EGL_BAD_PARAMETER|failed to choose pdev|failed to create dri2 screen'
+
+          # Optional syscall-level trace, off by default (the webkit path
+          # bug this originally existed to diagnose is fixed) — set
+          # AUDION_STRACE=1 to re-enable if something new comes up.
+          STRACE_WRAP=""
+          if [ "${AUDION_STRACE:-0}" = "1" ] && command -v strace >/dev/null 2>&1; then
+            STRACE_OUT="${TMPDIR:-/tmp}/audion-strace-$$.log"
+            echo "AUDION_STRACE=1 — tracing syscalls to: $STRACE_OUT" >&2
+            STRACE_WRAP="strace -f -e trace=execve,openat,stat,access -o $STRACE_OUT"
+          fi
+
+          HAS_DRI=0
+          for dev in /dev/dri/renderD*; do
+            [ -e "$dev" ] && [ -r "$dev" ] && [ -w "$dev" ] && HAS_DRI=1 && break
+          done
+
+          if [ "$HAS_DRI" -eq 0 ]; then
+            echo "Audion: no accessible DRI render node found — forcing software rendering." >&2
+            export LIBGL_ALWAYS_SOFTWARE=1
+            export WEBKIT_DISABLE_COMPOSITING_MODE=1
+            exec $STRACE_WRAP "$BIN" "$@"
+          fi
+
+          # A render node exists — try hardware rendering first, but capture
+          # stderr so a hard EGL failure can trigger one automatic retry in
+          # software mode instead of just crashing.
+          LAUNCH_LOG="${TMPDIR:-/tmp}/audion-launch-$$.log"
+          $STRACE_WRAP "$BIN" "$@" 2> >(tee "$LAUNCH_LOG" >&2)
+          STATUS=$?
+
+          if [ "$STATUS" -ne 0 ] && grep -qE "$EGL_FAILURE_PATTERN" "$LAUNCH_LOG" 2>/dev/null; then
+            echo "Audion: hardware GL/EGL initialization failed — retrying with software rendering..." >&2
+            export LIBGL_ALWAYS_SOFTWARE=1
+            export WEBKIT_DISABLE_COMPOSITING_MODE=1
+            exec $STRACE_WRAP "$BIN" "$@"
+          fi
+
+          exit "$STATUS"
           WRAPPER_EOF
 
           chmod +x squashfs-root/AppRun-real
+
+          # ---------------------------------------------------------------------------
+          # Work around tauri-apps/tauri#12463 / #6992: Tauri's AppImage bundler
+          # (linuxdeploy under the hood) does not reliably bundle WebKitGTK's
+          # helper-process directory (WebKitNetworkProcess, WebKitWebProcess,
+          # the injected-bundle .so) into usr/lib/.../webkit2gtk-4.1/, and
+          # even when present, WebKit's compiled-in lookup for it is relative
+          # to lib/x86_64-linux-gnu/... at the AppDir ROOT (no "usr/" prefix
+          # — that's the literal bug in #6992). We copy the real directory
+          # from the runner (installed via libwebkit2gtk-4.1-dev in
+          # setup/action.yml) into usr/lib/... (FHS-correct location) and
+          # ALSO expose it at lib/... via symlink (where WebKit actually
+          # looks), then verify at build time — not just "the files exist"
+          # but "the ELF interpreter and every shared-lib dependency the
+          # helper binaries need actually resolves" — because a missing
+          # dependency at runtime produces the exact same glib "No such
+          # file or directory" as a missing path, and that ambiguity is
+          # why this took several round-trips to pin down.
+          # ---------------------------------------------------------------------------
+          WEBKIT_LIBDIR="/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1"
+          DIAG_LOG="squashfs-root/webkit-bundle-diagnostics.log"
+          {
+            echo "=== WebKitGTK bundle diagnostics (build time) ==="
+            echo "Generated: $(date -u --iso-8601=seconds)"
+            echo "Runner: $(uname -a)"
+            echo
+
+            if [ -d "$WEBKIT_LIBDIR" ]; then
+              echo "Source dir found: $WEBKIT_LIBDIR"
+              echo "--- Contents ---"
+              ls -la "$WEBKIT_LIBDIR"
+              echo
+
+              mkdir -p "squashfs-root/usr/lib/x86_64-linux-gnu"
+              cp -aL --remove-destination "$WEBKIT_LIBDIR" \
+                "squashfs-root/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1"
+
+              mkdir -p "squashfs-root/lib"
+              if [ ! -e "squashfs-root/lib/x86_64-linux-gnu" ]; then
+                ln -s "../usr/lib/x86_64-linux-gnu" "squashfs-root/lib/x86_64-linux-gnu"
+              fi
+
+              echo "--- Post-copy: both lookup paths, resolved ---"
+              echo "usr/lib path: $(readlink -f squashfs-root/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1 2>&1)"
+              echo "root lib path (symlink target): $(readlink -f squashfs-root/lib/x86_64-linux-gnu/webkit2gtk-4.1 2>&1)"
+              echo
+
+              echo "--- ELF interpreter + shared-lib dependency check ---"
+              for helper in WebKitNetworkProcess WebKitWebProcess; do
+                HP="squashfs-root/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/$helper"
+                echo "[$helper]"
+                if [ ! -e "$HP" ]; then
+                  echo "  MISSING from bundled dir entirely."
+                  continue
+                fi
+                echo "  file: $(file -b "$HP" 2>&1)"
+                echo "  interpreter: $(patchelf --print-interpreter "$HP" 2>&1 || readelf -p .interp "$HP" 2>&1 | tail -1)"
+                echo "  ldd:"
+                ldd "$HP" 2>&1 | sed 's/^/    /'
+                echo
+              done
+            else
+              echo "WARNING: $WEBKIT_LIBDIR not found on runner (ubuntu-22.04)." 
+              echo "This build will almost certainly hit the WebKitNetworkProcess"
+              echo "spawn failure (tauri-apps/tauri#12463) — check that"
+              echo "libwebkit2gtk-4.1-dev is still installed in setup/action.yml."
+            fi
+          } | tee "$DIAG_LOG"
+          echo "Full diagnostics written to $DIAG_LOG (bundled inside the AppImage, viewable via --appimage-extract)."
 
           # Back up original AppRun and replace
           if [ -L squashfs-root/AppRun ]; then
@@ -382,7 +619,11 @@ jobs:
 
           cat > squashfs-root/AppRun << 'APPRUN_EOF'
           #!/bin/bash
-          HERE="$(dirname "$(readlink -f "${0}")")"
+          if [ -n "$APPDIR" ] && [ -f "$APPDIR/AppRun-real" ]; then
+            HERE="$APPDIR"
+          else
+            HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          fi
           exec "$HERE/AppRun-real" "$@"
           APPRUN_EOF
           chmod +x squashfs-root/AppRun
