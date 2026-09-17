@@ -105,6 +105,7 @@
 
   let deleteToken = "";
   let isBulkDeletingLyrics = false;
+  let isProbing = false;
 
   function tokenDisplayLabel(token: string): string {
     const t = token.trim().toLowerCase();
@@ -125,6 +126,28 @@
     ...DELETABLE_PRIORITY_TOKENS.map((t) => `${t.id} (${t.label})`),
     `all (${$_('settings.lyricsTokenAll', { default: 'All' })})`,
   ].join(' · ');
+
+  // diagnostic only
+  // runs read side strategies first, delete is opt-in via a second confirm
+  async function handleLyricsProbe() {
+    const token = deleteToken.trim().toLowerCase();
+    if (!token) return;
+    const tryDelete = await confirm(
+      `Probe token "${token}".\n\nOK = probe AND attempt deletion of anything it finds.\nCancel = read-only probe.`
+    );
+    isProbing = true;
+    try {
+      console.log("[LyricsSection] Probe starting, token:", token, "delete:", tryDelete);
+      const report = await lyricsStore.lyricsFsProbe(token, { delete: tryDelete });
+      console.log("[LyricsSection] Probe report:\n" + report);
+      addToast("Probe complete, see logs", "success");
+    } catch (err) {
+      console.error("[LyricsSection] Probe failed:", err);
+      addToast("Probe failed, see logs", "error");
+    } finally {
+      isProbing = false;
+    }
+  }
 
   async function handleBulkDeleteLyrics() {
     const token = deleteToken.trim().toLowerCase();
@@ -341,6 +364,19 @@
                 <div class="lyrics-delete-spinner"></div>
               {:else}
                 <Icon name="trash" size={16} />
+              {/if}
+            </button>
+            <button
+              class="lyrics-delete-btn"
+              on:click={handleLyricsProbe}
+              disabled={isProbing || !deleteToken.trim()}
+              aria-label="Run lyrics filesystem probe"
+              title="Diagnostic: probe read/delete for this token, results go to the log"
+            >
+              {#if isProbing}
+                <div class="lyrics-delete-spinner"></div>
+              {:else}
+                <Icon name="search" size={16} />
               {/if}
             </button>
           </div>

@@ -1214,6 +1214,24 @@ export const lyricsStore = {
             throw err;
         }
     },
+
+    // diagnostic only
+    // dir defaults to the parent of the first track in the db
+    // delete stays false unless explicitly passed
+    async lyricsFsProbe(token: string, opts?: { dir?: string; delete?: boolean; limit?: number }): Promise<string> {
+        const normalized = token.trim().toLowerCase();
+        try {
+            return await invoke<string>('lyrics_fs_probe', {
+                token: normalized,
+                dir: opts?.dir ?? null,
+                delete: opts?.delete ?? false,
+                limit: opts?.limit ?? null,
+            });
+        } catch (err) {
+            console.warn('[lyrics store] lyricsFsProbe failed:', err);
+            throw err;
+        }
+    },
 };
 
 // ---------------------------------------------------------------------------

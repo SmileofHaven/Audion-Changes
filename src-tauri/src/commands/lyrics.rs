@@ -433,7 +433,15 @@ pub fn delete_lyrics_by_token(
         Ok(entries) => {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if !path.is_file() { continue; }
+                // don't gate on is_file: it calls stat and reports false on any error, rned by read_dir at no extra cost
+                let is_dir = match entry.file_type() {
+                    Ok(t) => t.is_dir(),
+                    Err(e) => {
+                        tracing::warn!("[LYRICS] file_type failed for {}: {} => treating as file", path.display(), e);
+                        false
+                    }
+                };
+                if is_dir { continue; }
                 let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
                 let is_match = filename_matches_token(name, &token);
                 if cache_dump < DUMP_LIMIT {
@@ -479,20 +487,24 @@ pub fn delete_lyrics_by_token(
             }
         };
         let prefix = format!("{}.", stem);
+        // only entries that start with this track's own prefix are logged
         for entry in entries.flatten() {
             let epath = entry.path();
-            if !epath.is_file() { continue; }
-            let Some(name) = epath.file_name().and_then(|n| n.to_str()) else { continue };
-            if !name.starts_with(&prefix) {
-                if sidecar_dump < DUMP_LIMIT {
-                    tracing::info!("[LYRICS] sidecar entry (prefix mismatch, prefix={}): {}", prefix, epath.display());
-                    sidecar_dump += 1;
+            // is_file hides
+            // stat failures, use the dirent type instead
+            let is_dir = match entry.file_type() {
+                Ok(t) => t.is_dir(),
+                Err(e) => {
+                    tracing::warn!("[LYRICS] file_type failed for {}: {} => treating as file", epath.display(), e);
+                    false
                 }
-                continue;
-            }
+            };
+            if is_dir { continue; }
+            let Some(name) = epath.file_name().and_then(|n| n.to_str()) else { continue };
+            if !name.starts_with(&prefix) { continue; }
             let is_match = filename_matches_token(name, &token);
             if sidecar_dump < DUMP_LIMIT {
-                tracing::info!("[LYRICS] sidecar entry: {} matched={}", epath.display(), is_match);
+                tracing::info!("[LYRICS] sidecar candidate: {} matched={}", epath.display(), is_match);
                 sidecar_dump += 1;
             }
             if is_match {
