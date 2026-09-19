@@ -551,6 +551,8 @@ class MediaNotificationService : MediaBrowserServiceCompat(), AudionLibraryBridg
             .setOngoing(isPlaying)
             .setShowWhen(false)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            // prvents repeated updates being treated as new alerts playing notification sounds
+            .setOnlyAlertOnce(true)
             .addAction(
                 R.drawable.ic_skip_previous,
                 "Previous",

@@ -113,7 +113,9 @@ pub enum PlayerCommand {
     NativeAdvanced,
     NativeFinished,
     /// HTML5 side equivalents, reported by player.ts since only it can observe them
-    Html5CrossfadeCommitted,
+    /// track_id: the real track js actually committed to and started via html5StartCrossfade,
+    /// so this actor can resolve to itq
+    Html5CrossfadeCommitted { track_id: i64 },
     Html5Ended,
 }
 
@@ -122,6 +124,13 @@ pub enum PlayerCommand {
 pub enum AdvanceDirection {
     Next,
     Previous,
+}
+
+enum Known {
+    /// the engine's own AudioEvent::TrackAdvanced already carries the real promoted path
+    Path(String),
+    /// js already knows exactly which track it committed to for an html5 crossfade
+    TrackId(i64),
 }
 
 // =============================================================================
@@ -254,6 +263,35 @@ impl PlayerState {
 
         Some((next_idx, track))
     }
+
+    /// resolves what's actually current from ground the real path the engine promoted, or the real track id js actually committed to
+    /// instead of independently guessing via advance()'s own counter
+    fn resolve_to<F>(&mut self, matches: F) -> Option<(usize, TrackRef)>
+    where
+        F: Fn(&TrackRef) -> bool,
+    {
+        let resolved_idx = self.tracks.iter().position(|t| matches(t))?;
+        let track = self.tracks[resolved_idx].clone();
+
+        if self.shuffle {
+            if let Some(pos) = self.shuffled_indices.iter().position(|&i| i == resolved_idx) {
+                self.shuffled_index = pos;
+            }
+            // if not found in shuffled_indices, leave shuffled_index untouched
+            // this branch existing at all would itself indicate a deeper desync worth surfacing
+        }
+        self.index = resolved_idx;
+
+        Some((resolved_idx, track))
+    }
+
+    fn resolve_to_path(&mut self, path: &str) -> Option<(usize, TrackRef)> {
+        self.resolve_to(|t| t.path == path)
+    }
+
+    fn resolve_to_id(&mut self, track_id: i64) -> Option<(usize, TrackRef)> {
+        self.resolve_to(|t| t.id == track_id)
+    }
 }
 
 // =============================================================================
@@ -295,8 +333,25 @@ impl PlayerStateSync {
                 }
             };
 
-            let do_advance = |state: &mut PlayerState, forward: bool, reason: AdvanceReason, also_play_natively: bool| {
-                match state.advance(forward) {
+            let do_advance = |state: &mut PlayerState, forward: bool, reason: AdvanceReason, also_play_natively: bool, known: Option<Known>| {
+                let result = match known {
+                    // a transition already happened elsewhere and
+                    // we already know which track it actually was. resolve to that
+                    Some(Known::Path(ref p)) => state
+                        .resolve_to_path(p)
+                        .or_else(|| {
+                            tracing::warn!("[PLAYER] TrackAdvanced path not found in mirror, falling back to blind advance: {p}");
+                            state.advance(forward)
+                        }),
+                    Some(Known::TrackId(id)) => state
+                        .resolve_to_id(id)
+                        .or_else(|| {
+                            tracing::warn!("[PLAYER] Html5CrossfadeCommitted track id not found in mirror, falling back to blind advance: {id}");
+                            state.advance(forward)
+                        }),
+                    None => state.advance(forward),
+                };
+                match result {
                     Some((idx, track)) => {
                         state.generation += 1;
                         state.current_track_id = Some(track.id);
@@ -352,7 +407,7 @@ impl PlayerStateSync {
                                     AdvanceDirection::Next => (true, AdvanceReason::UserNext),
                                     AdvanceDirection::Previous => (false, AdvanceReason::UserPrevious),
                                 };
-                                do_advance(&mut state, forward, reason, false);
+                                do_advance(&mut state, forward, reason, false, None);
                             }
 
                             PlayerCommand::ColdAdvance { direction } => {
@@ -360,7 +415,7 @@ impl PlayerStateSync {
                                     AdvanceDirection::Next => (true, AdvanceReason::UserNext),
                                     AdvanceDirection::Previous => (false, AdvanceReason::UserPrevious),
                                 };
-                                do_advance(&mut state, forward, reason, true);
+                                do_advance(&mut state, forward, reason, true, None);
                             }
 
                             PlayerCommand::SetRepeatMode(mode) => {
@@ -405,22 +460,25 @@ impl PlayerStateSync {
                             }
 
                             PlayerCommand::NativeAdvanced => {
-                                do_advance(&mut state, true, AdvanceReason::NativeAutoAdvance, false);
+                                do_advance(&mut state, true, AdvanceReason::NativeAutoAdvance, false, None);
                             }
 
                             PlayerCommand::NativeFinished => {
                                 // engine already loops repeat-one internally (see set_repeat_one)
                                 // a natural-end report should only reach us here for repeat-off/repeat-all "advance forward" is the correct response
                                 // repeat-one looping back to the same track is handled entirely inside the engine and never surfaces a TrackFinished at all
-                                do_advance(&mut state, true, AdvanceReason::NativeNaturalEnd, false);
+                                do_advance(&mut state, true, AdvanceReason::NativeNaturalEnd, false, None);
                             }
 
-                            PlayerCommand::Html5CrossfadeCommitted => {
-                                do_advance(&mut state, true, AdvanceReason::Html5AutoAdvance, false);
+                            PlayerCommand::Html5CrossfadeCommitted { track_id } => {
+                                // js side already knows exactly which track it started
+                                // (it made the real html5StartCrossfade call itself)
+                                // resolve to that
+                                do_advance(&mut state, true, AdvanceReason::Html5AutoAdvance, false, Some(Known::TrackId(track_id)));
                             }
 
                             PlayerCommand::Html5Ended => {
-                                do_advance(&mut state, true, AdvanceReason::Html5NaturalEnd, false);
+                                do_advance(&mut state, true, AdvanceReason::Html5NaturalEnd, false, None);
                             }
                         }
                     }
@@ -434,18 +492,20 @@ impl PlayerStateSync {
                         // everything else (StateChanged, Error, DeviceListChanged) is still forwarded to the frontend via audio://event by the worker thread itself
                         // player.rs doesn't need to see those to make advance decisions, so it doesn't re-emit them
                         match evt {
-                            AudioEvent::TrackAdvanced { .. } => {
-                                // the engine already decided "when" 
-                                // (sample-accurate, via maybe_auto_crossfade)
-                                // player.rs only decides "what's next"
-                                do_advance(&mut state, true, AdvanceReason::NativeAutoAdvance, false);
+                            AudioEvent::TrackAdvanced { new_path, .. } => {
+                                // resolve to the accurate track using a real path
+                                do_advance(&mut state, true, AdvanceReason::NativeAutoAdvance, false, Some(Known::Path(new_path)));
                             }
                             AudioEvent::TrackFinished { .. } => {
                                 // unlike TrackAdvanced (engine already promoted + scheduled the next source),
                                 // a plain natural end needs player.rs to actually start the next track => 
                                 // emit_directive silently no-ops with no AppHandle (android auto cold start),
                                 // so the native fallback must run here or playback just stops
-                                do_advance(&mut state, true, AdvanceReason::NativeNaturalEnd, true);
+                                // nothing was pre-promoted to resolve against here
+                                // this actor is
+                                // the one originating the decision,
+                                // so the normal advance() is correct
+                                do_advance(&mut state, true, AdvanceReason::NativeNaturalEnd, true, None);
                             }
                             _ => {}
                         }
@@ -491,8 +551,8 @@ pub fn player_native_started(generation: u64, track_id: i64, state: State<'_, Pl
 }
 
 #[tauri::command]
-pub fn player_html5_crossfade_committed(state: State<'_, PlayerStateSync>) -> Result<(), String> {
-    state.send(PlayerCommand::Html5CrossfadeCommitted)
+pub fn player_html5_crossfade_committed(track_id: i64, state: State<'_, PlayerStateSync>) -> Result<(), String> {
+    state.send(PlayerCommand::Html5CrossfadeCommitted { track_id })
 }
 
 #[tauri::command]

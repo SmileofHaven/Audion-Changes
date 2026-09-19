@@ -1,9 +1,8 @@
 import { get } from 'svelte/store';
 import { currentTrack, isPlaying, togglePlay, nextTrack, previousTrack, currentTime, duration, shuffle, repeat, toggleShuffle, cycleRepeat, playTrackById } from '$lib/stores/player';
+import { pluginEvents } from '$lib/stores/player/stores';
 import { nativeAudioStop } from '$lib/services/native-audio';
-import { getTrackCoverSrc } from '$lib/api/tauri';
-import { formatDuration } from '$lib/api/tauri';
-import { isAndroid, isTauri } from '$lib/api/tauri';
+import { getTrackCoverSrc, formatDuration, isAndroid, isTauri, type Track } from '$lib/api/tauri';
 import { isLoved, toggleLove } from '$lib/stores/loved';
 
 interface AndroidInterface {
@@ -50,8 +49,10 @@ declare global {
 let notificationInitialized = false;
 let lastArtUrl: string | null = null;
 let lastArtBase64: string | null = null;
-let lastProgressSecond = -1;
-let lastDurationSecond = -1;
+
+// the 20s periodic safety-net resync. cleared and restarted every time an immediate update fires
+let periodicTimer: ReturnType<typeof setTimeout> | null = null;
+const PERIODIC_INTERVAL_MS = 20_000;
 
 
 export async function initAndroidNotification() {
@@ -97,16 +98,23 @@ export async function initAndroidNotification() {
         playTrackById(parseInt(match[1], 10));
     };
 
-    // Subscribe to player state changes
-    currentTrack.subscribe(async (track) => {
-        if (!track) {
-            window.AndroidMediaNotification?.stopNotification();
-            lastArtUrl = null;
-            lastArtBase64 = null;
-            lastProgressSecond = -1;
-            lastDurationSecond = -1;
-            return;
+    // currentTrack has no designated pluginEvents counterpart for going back to null
+    // so this one stays a direct store subscription
+    currentTrack.subscribe((track) => {
+        if (track) return; // the real track is now playing work happens in the trackChange listener below
+        window.AndroidMediaNotification?.stopNotification();
+        lastArtUrl = null;
+        lastArtBase64 = null;
+        if (periodicTimer !== null) {
+            clearTimeout(periodicTimer);
+            periodicTimer = null;
         }
+    });
+
+    // designated event for if a track actually started playing
+    // see pluginEvents.emit(trackChange, ...)
+    pluginEvents.on('trackChange', async ({ track }: { track: Track | null }) => {
+        if (!track) return; // handled by the currentTrack subscription above instead
 
         const playing = get(isPlaying);
         const loved = get(isLoved);
@@ -189,93 +197,34 @@ export async function initAndroidNotification() {
             get(shuffle),
             get(repeat)
         );
-    });
 
-    isPlaying.subscribe(async (playing) => {
-        const track = get(currentTrack);
-        if (track) {
-            const loved = get(isLoved);
-            const pos = get(currentTime);
-            const dur = get(duration);
-            window.AndroidMediaNotification?.updateNotification(
-                track.title || 'Unknown Title',
-                track.artist || 'Unknown Artist',
-                track.album || '',
-                playing,
-                loved,
-                lastArtBase64,
-                formatDuration(pos),
-                formatDuration(dur),
-                get(shuffle),
-                get(repeat)
-            );
-        }
-    });
+        schedulePeriodicUpdate();
+    }, 'android-notification');
 
-    currentTime.subscribe((pos) => {
-        const track = get(currentTrack);
-        if (!track) return;
+    // play/pause and seek are both designated events fired directly by
+    // togglePlay()/ pause()/resume() and seek() respectively
+    // (see playStateChange/seeked emits in backend.ts and playback.ts)
+    pluginEvents.on('playStateChange', () => pushImmediateUpdate(), 'android-notification');
+    pluginEvents.on('seeked', () => pushImmediateUpdate(), 'android-notification');
 
-        const dur = get(duration);
-        const posSecond = Math.floor(pos || 0);
-        const durSecond = Math.floor(dur || 0);
-
-        if (posSecond === lastProgressSecond && durSecond === lastDurationSecond) {
-            return;
-        }
-
-        lastProgressSecond = posSecond;
-        lastDurationSecond = durSecond;
-
-        window.AndroidMediaNotification?.updateNotification(
-            track.title || 'Unknown Title',
-            track.artist || 'Unknown Artist',
-            track.album || '',
-            get(isPlaying),
-            get(isLoved),
-            lastArtBase64,
-            formatDuration(pos),
-            formatDuration(dur),
-            get(shuffle),
-            get(repeat)
-        );
-    });
-
+    // duration resolving (e.g. late arriving metadata) has no designated pluginEvents
+    // a plain store subscription is appropriate here
+    let lastKnownDuration: number | null = null;
     duration.subscribe((dur) => {
         const track = get(currentTrack);
         if (!track) return;
-
-        const pos = get(currentTime);
-        const posSecond = Math.floor(pos || 0);
-        const durSecond = Math.floor(dur || 0);
-
-        if (posSecond === lastProgressSecond && durSecond === lastDurationSecond) {
-            return;
-        }
-
-        lastProgressSecond = posSecond;
-        lastDurationSecond = durSecond;
-
-        window.AndroidMediaNotification?.updateNotification(
-            track.title || 'Unknown Title',
-            track.artist || 'Unknown Artist',
-            track.album || '',
-            get(isPlaying),
-            get(isLoved),
-            lastArtBase64,
-            formatDuration(pos),
-            formatDuration(dur),
-            get(shuffle),
-            get(repeat)
-        );
+        if (dur === lastKnownDuration) return;
+        lastKnownDuration = dur;
+        pushImmediateUpdate();
     });
 
     // pushes shuffle/repeat toggles made in-app (not from android auto) to the
     // session too, so auto's shuffle/repeat icons stay in sync either direction
-    shuffle.subscribe(() => pushSessionUpdate());
-    repeat.subscribe(() => pushSessionUpdate());
+    shuffle.subscribe(() => pushImmediateUpdate());
+    repeat.subscribe(() => pushImmediateUpdate());
 
-    function pushSessionUpdate() {
+
+    function pushImmediateUpdate() {
         const track = get(currentTrack);
         if (!track) return;
 
@@ -291,6 +240,19 @@ export async function initAndroidNotification() {
             get(shuffle),
             get(repeat)
         );
+
+        schedulePeriodicUpdate();
+    }
+
+    // the 20s resync => only fires if nothing else has already pushed an update more recently
+    function schedulePeriodicUpdate() {
+        if (periodicTimer !== null) {
+            clearTimeout(periodicTimer);
+        }
+        periodicTimer = setTimeout(() => {
+            console.log('[Android Notification] 20s periodic resync (no other update in the interim)');
+            pushImmediateUpdate();
+        }, PERIODIC_INTERVAL_MS);
     }
 
     notificationInitialized = true;

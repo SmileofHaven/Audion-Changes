@@ -75,9 +75,9 @@ export async function playerNativeStarted(generation: number, trackId: number): 
     await invoke('player_native_started', { generation, trackId });
 }
 
-export async function playerHtml5CrossfadeCommitted(): Promise<void> {
+export async function playerHtml5CrossfadeCommitted(trackId: number): Promise<void> {
     if (!isTauri()) return;
-    await invoke('player_html5_crossfade_committed');
+    await invoke('player_html5_crossfade_committed', { trackId });
 }
 
 export async function playerHtml5Ended(): Promise<void> {

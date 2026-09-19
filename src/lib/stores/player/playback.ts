@@ -115,12 +115,12 @@ async function _triggerHtml5Crossfade(): Promise<void> {
 
     const started = await html5StartCrossfade(nextTrackObj.id, vol, settings.crossfadeSeconds);
     if (started) {
-        // tell player.rs the transition happened
+        // tell player.rs the transition happened, and exactly which track we committed to
         // it owns the queue navigation decision and will emit an Advance directive back with the new generation,
         // which the registered handler applies via _advanceUiToTrack
         // don't call it directly here
         // so native and HTML5 auto advances go through exactly one code path
-        playerHtml5CrossfadeCommitted().catch(console.error);
+        playerHtml5CrossfadeCommitted(nextTrackObj.id).catch(console.error);
     } else {
         // reset (reckoning as any)._hasCrossfaded = false
         reckoning.resetHasCrossfaded();
@@ -181,16 +181,48 @@ registerPlayerDirectiveHandler((directive: PlayerDirective) => {
 
     const { reason, track: trackRef, queue_index, generation } = directive.data;
     const q = get(queue);
-    const track = q[queue_index]?.id === trackRef.id ? q[queue_index] : q.find(t => t.id === trackRef.id);
-    if (!track) {
+
+    // since rust's mirror is synced over async IPC
+    // so: always resolve position by looking the track up locally
+    const resolvedIndex = q.findIndex(t => t.id === trackRef.id);
+    if (resolvedIndex === -1) {
         // queue mirror in rust and js disagreed
         // shouldn't happen since SyncQueue is sent on every mutation
         // but for safety
         console.warn('[Player] Advance directive referenced a track not found in queue:', trackRef);
         return;
     }
+    const track = q[resolvedIndex];
 
-    queueIndex.set(queue_index);
+    if (resolvedIndex !== queue_index) {
+        console.warn(
+            '[Player] Advance directive queue_index was stale (rust mirror desynced from JS queue); ' +
+            `corrected ${queue_index} -> ${resolvedIndex} for track "${track.title ?? track.id}"`
+        );
+    }
+    queueIndex.set(resolvedIndex);
+    if (get(shuffle)) {
+        // keep js's local shuffledIndex synced to the position rust actually confirmed,
+        // rather than trusting js's own dry-run prediction from _advanceQueueIndex
+        // _advanceQueueIndex is always called with dry=true (every call site in the codebase does),
+        // so its shuffledIndex.set branch never runs
+        // this fixes it
+        // the UI list becomes fresh every transition,
+        // and the next HTML5 crossfade prediction advances from the real position
+        const sIdx = get(shuffledIndices).indexOf(resolvedIndex);
+        if (sIdx !== -1) {
+            shuffledIndex.set(sIdx);
+        } else {
+            console.warn(
+                '[Player] Resolved track index not found in shuffledIndices - shuffle order out of sync:',
+                resolvedIndex
+            );
+        }
+    }
+    if (resolvedIndex !== queue_index) {
+        // push the corrected index back to rust right away
+        syncPlayerQueue();
+    }
 
     if (reason === 'user_next' || reason === 'user_previous' || reason === 'user_direct_select') {
         // nothing is playing this track yet => actually start it

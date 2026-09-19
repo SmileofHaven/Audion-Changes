@@ -1,6 +1,6 @@
 // Dead-reckoning position engine (native backend) and HTML5 RAF ticker.
 import { get } from 'svelte/store';
-import { currentTime, duration, isPlaying, activeBackend, pluginEvents } from './stores';
+import { currentTime, duration, isPlaying, activeBackend, pluginEvents, repeat } from './stores';
 import { appSettings } from '$lib/stores/settings';
 
 // How often to push position into Svelte stores (ms).
@@ -140,8 +140,9 @@ function _html5Tick(): void {
     const state = html5GetState();
 
     // Crossfade threshold check runs every frame for timing accuracy.
+    // repeat-one should restart the same track
     const settings = get(appSettings);
-    if (settings.crossfadeSeconds > 0 && state.duration > settings.crossfadeSeconds && !_hasCrossfaded) {
+    if (settings.crossfadeSeconds > 0 && state.duration > settings.crossfadeSeconds && !_hasCrossfaded && get(repeat) !== 'one') {
         const threshold = state.duration - settings.crossfadeSeconds;
         if (state.position >= threshold) {
             _hasCrossfaded = true;
