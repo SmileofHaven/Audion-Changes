@@ -145,3 +145,23 @@ export const meshColors = derived(
     return pickFour(source.map((c) => c.hex));
   }
 );
+// palette for an arbitrary cover url (detail view backdrop)
+export async function paletteForCover(coverSrc: string): Promise<PaletteColor[]> {
+  const hit = cache.get(coverSrc);
+  if (hit) return hit;
+  try {
+    const res = await fetch(coverSrc);
+    if (!res.ok) return [];
+    const bytes = await res.arrayBuffer();
+    const raw = await invoke<{ hex: string; luminance: number; is_dark: boolean; weight: number }[]>(
+      "extract_palette",
+      { imageBytes: Array.from(new Uint8Array(bytes)) }
+    );
+    const palette = normalizePalette(raw);
+    cache.set(coverSrc, palette);
+    return palette;
+  } catch (e) {
+    console.warn("cover palette extraction failed:", e);
+    return [];
+  }
+}

@@ -231,32 +231,34 @@
         {/if}
     </svelte:fragment>
 
-    <!-- Info Bar: MusicBrainz release info -->
-    <svelte:fragment slot="info-bar">
+    <!-- musicbrainz tags inline with the stats row, same bullet separation -->
+    <svelte:fragment slot="stats-extra">
         {#if mbReleaseLoading}
-            <div class="mb-info-bar mb-info-loading">
+            <span class="stat-dot">•</span>
+            <span class="mb-loading">
                 <span class="mb-info-spinner"></span>
                 <span class="mb-info-hint">{$_("album.fetchingReleaseInfo")}</span>
-            </div>
-        {:else if mbRelease && (mbRelease.year || mbRelease.label || mbRelease.country || mbRelease.release_type)}
-            <div class="mb-info-bar">
-                {#if mbRelease.release_type}
-                    <span class="mb-chip type-chip">{mbRelease.release_type}</span>
-                {/if}
-                {#if mbRelease.year}
-                    <span class="mb-chip">{mbRelease.year}</span>
-                {/if}
-                {#if mbRelease.label}
-                    <span class="mb-chip">
-                        <Icon name="tag" size={12} />
-                        {mbRelease.label}
-                    </span>
-                {/if}
-                {#if mbRelease.country}
-                    <span class="mb-chip">{mbRelease.country}</span>
-                {/if}
-                <span class="mb-source-label">{$_("album.viaMusicBrainz")}</span>
-            </div>
+            </span>
+        {:else if mbRelease}
+            {#if mbRelease.release_type}
+                <span class="stat-dot">•</span>
+                <span class="mb-chip type-chip">{mbRelease.release_type}</span>
+            {/if}
+            {#if mbRelease.year}
+                <span class="stat-dot">•</span>
+                <span class="mb-chip">{mbRelease.year}</span>
+            {/if}
+            {#if mbRelease.label}
+                <span class="stat-dot">•</span>
+                <span class="mb-chip">
+                    <Icon name="tag" size={12} />
+                    {mbRelease.label}
+                </span>
+            {/if}
+            {#if mbRelease.country}
+                <span class="stat-dot">•</span>
+                <span class="mb-chip">{mbRelease.country}</span>
+            {/if}
         {/if}
     </svelte:fragment>
 </DetailView>
@@ -276,15 +278,9 @@
     }
 
     /* ── MusicBrainz info bar ── */
-    .mb-info-bar {
-        display: flex;
+    .mb-loading {
+        display: inline-flex;
         align-items: center;
-        flex-wrap: wrap;
-        gap: var(--spacing-xs);
-        padding-top: var(--spacing-xs);
-    }
-
-    .mb-info-loading {
         opacity: 0.6;
     }
 
@@ -325,11 +321,5 @@
     .mb-chip.type-chip {
         background: rgba(29, 185, 84, 0.15);
         color: var(--accent-primary);
-    }
-
-    .mb-source-label {
-        font-size: 0.7rem;
-        color: var(--text-tertiary);
-        margin-left: var(--spacing-xs);
     }
 </style>

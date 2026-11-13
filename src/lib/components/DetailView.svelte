@@ -4,6 +4,8 @@
     import Icon from "$lib/components/Icon.svelte";
     import ArtistLinks from "$lib/components/ArtistLinks.svelte";
     import MetadataModal from "$lib/components/MetadataModal.svelte";
+    import { paletteForCover } from "$lib/stores/palette";
+    import { pickVibrantColor } from "$lib/stores/theme";
     import type { Track } from "$lib/api/tauri";
     import { formatDuration } from "$lib/api/tauri";
     import {
@@ -90,6 +92,7 @@
     // ──────────────────────────────────────────────
     let containerEl: HTMLDivElement;
     let tracklistHeaderEl: HTMLDivElement;
+    let tracksSpacerEl: HTMLDivElement;
     let fileInputEl: HTMLInputElement;
     let editTitleInput: HTMLInputElement;
     let editTitleValue = "";
@@ -97,7 +100,26 @@
     let scrollTop = 0;
     let containerHeight = 600;
     let tracksTopOffset = 360;
+    // header is transparent so the backdrop bleeds through, opaque once it sticks under the top bar
+    $: headerStuck = scrollTop + 56 >= tracksTopOffset - 38;
     let resizeObserver: ResizeObserver | undefined;
+
+    // backdrop color from the same rust palette extraction the player uses
+    let backdropColor: string | null = null;
+    let backdropGen = 0;
+
+    async function updateBackdrop(src: string | null) {
+        const gen = ++backdropGen;
+        if (!src) {
+            backdropColor = null;
+            return;
+        }
+        const palette = await paletteForCover(src);
+        if (gen !== backdropGen) return;
+        backdropColor = pickVibrantColor(palette);
+    }
+
+    $: updateBackdrop(coverSrc);
 
     // Metadata modal state for track context menu
     let metadataModalTrack: Track | null = null;
@@ -167,7 +189,7 @@
 
     $: isMobileView = $isMobile;
     $: trackRowHeight = isMobileView ? 60 : 52;
-    const DISC_HEADER_HEIGHT = 44;
+    const DISC_HEADER_HEIGHT = 56;
     const OVERSCAN_PX = 320;
 
     $: hasMultipleDiscs = groupDiscs && tracks.some((t) => (t.disc_number || 1) > 1);
@@ -257,8 +279,12 @@
     function measureLayout() {
         if (!containerEl) return;
         containerHeight = containerEl.clientHeight;
-        if (tracklistHeaderEl) {
-            tracksTopOffset = tracklistHeaderEl.offsetTop;
+        // spacer is not sticky => its rect gives the true row 0 offset in the scroll area
+        if (tracksSpacerEl) {
+            tracksTopOffset =
+                tracksSpacerEl.getBoundingClientRect().top -
+                containerEl.getBoundingClientRect().top +
+                containerEl.scrollTop;
         }
     }
 
@@ -384,7 +410,11 @@
     }
 </script>
 
-<div class="detail-view" bind:this={containerEl} on:scroll={handleScroll}>
+<div
+    class="detail-view"
+    bind:this={containerEl}
+    on:scroll={handleScroll}
+>
     {#if loading}
         <div class="state-container">
             <div class="loading-spinner"></div>
@@ -401,14 +431,9 @@
             {/if}
         </div>
     {:else}
-        <!-- Atmospheric Ambient Glow -->
-        <div class="hero-backdrop"></div>
-        {#if coverSrc}
-            <div
-                class="hero-ambient-glow"
-                style="background-image: url('{coverSrc}');"
-                aria-hidden="true"
-            ></div>
+        <!-- cover color tint, fades out downward and bleeds into the tracklist -->
+        {#if backdropColor}
+            <div class="hero-backdrop" style="--backdrop-color: {backdropColor}" aria-hidden="true"></div>
         {/if}
 
         <!-- Top Navigation Bar (Back & Extra actions) -->
@@ -639,6 +664,7 @@
                     <div
                         class="tracklist-header"
                         class:no-album={!showAlbum}
+                        class:stuck={headerStuck}
                         bind:this={tracklistHeaderEl}
                         role="row"
                     >
@@ -706,16 +732,27 @@
                     <!-- Virtualized Track Rows Spacer -->
                     <div
                         class="tracks-virtual-spacer"
+                        bind:this={tracksSpacerEl}
                         style="height: {totalTracksHeight}px;"
                     >
                         {#each visibleItems as { top, height, item } (item.type === "disc-header" ? item.id : item.track.id)}
                             {#if item.type === "disc-header"}
+                                <!-- disc separator reuses the track row grid: icon in # column, label in title column -->
                                 <div
-                                    class="disc-header-row"
+                                    class="track-row disc-row"
+                                    class:no-album={!showAlbum}
                                     style="transform: translateY({top}px); height: {height}px;"
                                 >
-                                    <Icon name="disc" size={16} />
-                                    <span>{$_("album.disc", { values: { number: item.disc } }) || `Disc ${item.disc}`}</span>
+                                    <span class="col-num">
+                                        <Icon name="disc" size={26} />
+                                    </span>
+                                    <div class="col-title">
+                                        <div class="title-line truncate">
+                                            <span class="disc-title-text">
+                                                {$_("album.disc", { values: { number: item.disc } }) || `Disc ${item.disc}`}
+                                            </span>
+                                        </div>
+                                    </div>
                                 </div>
                             {:else}
                                 {@const track = item.track}
@@ -873,37 +910,29 @@
         width: 100%;
         overflow-y: auto;
         overflow-x: hidden;
+        overscroll-behavior-y: none;
         background: var(--bg-base);
         scroll-behavior: auto;
         display: flex;
         flex-direction: column;
     }
 
-    /* Ambient atmospheric gradient backdrop */
+    /* eased fade so the tail is barely visible where the tracklist header sits */
     .hero-backdrop {
         position: absolute;
         top: 0;
         left: 0;
         right: 0;
-        height: 380px;
-        background: linear-gradient(180deg, var(--bg-surface) 0%, rgba(18, 18, 18, 0) 100%);
+        height: 640px;
+        background: linear-gradient(
+            180deg,
+            color-mix(in srgb, var(--backdrop-color) 55%, var(--bg-base)) 0%,
+            color-mix(in srgb, var(--backdrop-color) 30%, var(--bg-base)) 40%,
+            color-mix(in srgb, var(--backdrop-color) 10%, var(--bg-base)) 75%,
+            var(--bg-base) 100%
+        );
         pointer-events: none;
         z-index: 0;
-    }
-
-    .hero-ambient-glow {
-        position: absolute;
-        top: -60px;
-        left: -40px;
-        width: 420px;
-        height: 420px;
-        background-size: cover;
-        background-position: center;
-        filter: blur(100px);
-        opacity: 0.22;
-        pointer-events: none;
-        z-index: 0;
-        border-radius: 50%;
     }
 
     /* ──────────────────────────────────────────────
@@ -1019,6 +1048,19 @@
         align-items: flex-end;
         gap: var(--spacing-xl);
         padding: var(--spacing-md) var(--spacing-xl) var(--spacing-lg);
+    }
+
+    /* faint dark tint around cover + text, fades out on all edges */
+    .hero-header::before {
+        content: "";
+        position: absolute;
+        top: -24px;
+        bottom: -24px;
+        left: 0;
+        right: 0;
+        background: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.22) 55%, transparent 100%);
+        pointer-events: none;
+        z-index: -1;
     }
 
     .hero-cover-container {
@@ -1170,7 +1212,7 @@
         margin-top: var(--spacing-xs);
     }
 
-    .stat-dot {
+    :global(.stat-dot) {
         color: var(--text-subdued);
     }
 
@@ -1304,6 +1346,7 @@
        ────────────────────────────────────────────── */
     .tracklist-container {
         position: relative;
+        z-index: 1;
         padding: 0 var(--spacing-xl) var(--spacing-xl);
         flex: 1;
     }
@@ -1311,7 +1354,8 @@
     .tracklist-header {
         position: sticky;
         top: 56px;
-        z-index: 10;
+        z-index: 20;
+        pointer-events: auto;
         display: grid;
         grid-template-columns: 44px 1fr 1fr 80px 80px;
         align-items: center;
@@ -1324,6 +1368,11 @@
         font-weight: var(--font-weight-semibold);
         text-transform: uppercase;
         letter-spacing: 0.06em;
+        background: transparent;
+        transition: background-color var(--transition-fast);
+    }
+
+    .tracklist-header.stuck {
         background: var(--bg-base);
     }
 
@@ -1414,23 +1463,8 @@
     /* Virtualized Spacer */
     .tracks-virtual-spacer {
         position: relative;
+        z-index: 0;
         width: 100%;
-    }
-
-    /* Disc Header Row */
-    .disc-header-row {
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
-        display: flex;
-        align-items: center;
-        gap: var(--spacing-sm);
-        padding: 0 var(--spacing-md);
-        color: var(--text-primary);
-        font-size: var(--font-size-md);
-        font-weight: var(--font-weight-bold);
-        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     }
 
     /* Track Row */
@@ -1464,6 +1498,23 @@
 
     .track-row.playing {
         color: var(--accent-primary);
+    }
+
+    /* disc separator row: same grid as a track row, not interactive */
+    .track-row.disc-row {
+        cursor: default;
+        color: var(--text-secondary);
+    }
+
+    .track-row.disc-row:hover {
+        background-color: transparent;
+        color: var(--text-secondary);
+    }
+
+    .disc-title-text {
+        font-size: var(--font-size-lg);
+        font-weight: var(--font-weight-bold);
+        color: var(--text-primary);
     }
 
     .track-row.playing .track-title-text {
@@ -1680,6 +1731,91 @@
     .bottom-layers {
         position: relative;
         width: 100%;
+    }
+
+    /* ──────────────────────────────────────────────
+       Scroll-driven collapse (native css)
+       unsupported engines keep the class based switch above
+       ────────────────────────────────────────────── */
+    @supports (animation-timeline: scroll()) {
+        .hero-cover-container,
+        .hero-info,
+        .action-bar,
+        .nav-scrolled-info,
+        .top-nav-bar {
+            animation-timing-function: linear;
+            animation-fill-mode: both;
+            animation-timeline: scroll(nearest block);
+        }
+
+        /* cover shrinks and fades away */
+        .hero-cover-container {
+            transform-origin: 50% 100%;
+            animation-name: dv-cover-shrink;
+            animation-range: 0px 240px;
+        }
+
+        /* title, subtitle and stats fade out */
+        .hero-info {
+            animation-name: dv-hero-fade;
+            animation-range: 0px 200px;
+        }
+
+        /* buttons fade before they slide under the bar */
+        .action-bar {
+            animation-name: dv-hero-fade;
+            animation-range: 100px 300px;
+        }
+
+        /* compact strip content fades in as the hero leaves */
+        .nav-scrolled-info {
+            transition: none;
+            animation-name: dv-strip-in;
+            animation-range: 140px 240px;
+        }
+
+        /* strip gets its bar background */
+        .top-nav-bar,
+        .top-nav-bar.scrolled {
+            transition: none;
+            background: transparent;
+            border-bottom: 1px solid transparent;
+            animation-name: dv-strip-bg;
+            animation-range: 120px 200px;
+        }
+    }
+
+    @keyframes dv-cover-shrink {
+        to {
+            transform: scale(0.6);
+            opacity: 0;
+            visibility: hidden;
+        }
+    }
+
+    @keyframes dv-hero-fade {
+        to {
+            opacity: 0;
+            visibility: hidden;
+        }
+    }
+
+    @keyframes dv-strip-in {
+        from {
+            opacity: 0;
+            transform: translateY(6px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    @keyframes dv-strip-bg {
+        to {
+            background-color: var(--bg-base);
+            border-bottom-color: rgba(255, 255, 255, 0.08);
+        }
     }
 
     /* ──────────────────────────────────────────────
