@@ -10,21 +10,17 @@
         formatDuration,
     } from "$lib/api/tauri";
     import { confirm } from "$lib/stores/dialogs";
-    import { pinnedItems } from "$lib/stores/pinned";
     import { contextMenu } from "$lib/stores/ui";
     import { buildPlaylistContextMenu } from "$lib/menus/contextMenus";
-    import { playTracks, addToQueue } from "$lib/stores/player";
+    import { playTracks, addToQueue, currentPlaylistId, isPlaying } from "$lib/stores/player";
     import { goToPlaylists, goToTracksMultiSelect } from "$lib/stores/view";
     import { loadPlaylists, playlists, playlistPendingTracks, drainPendingTracks } from "$lib/stores/library";
-    import { multiSelect } from "$lib/stores/multiselect";
-    import TrackList from "./track-list/TrackList.svelte";
     import {
         playlistCovers,
         setPlaylistCover,
         removePlaylistCover,
     } from "$lib/stores/playlistCovers";
     import {
-        canDownload,
         downloadTracks,
         hasDownloadableTracks,
         needsDownloadLocation,
@@ -33,38 +29,16 @@
     } from "$lib/services/downloadService";
     import { addToast } from "$lib/stores/toast";
     import Icon from "$lib/components/Icon.svelte";
+    import DetailView from "./DetailView.svelte";
 
     export let playlistId: number;
 
     let playlist: Playlist | null = null;
     let tracks: Track[] = [];
     let loading = true;
-    let isEditing = false;
-    let editName = "";
-    let coverInput: HTMLInputElement;
-    let coverHovered = false;
+    let menuOpen = false;
 
-    // in-place selection of this playlist's own tracks
-    // (separate from MultiSelectTrackView's "add to playlist" flow)
-    // batch operations are handled via the context menu, not here
-    let selectModeActive = false;
-
-    function enterSelectMode() {
-        multiSelect.clearSelections();
-        selectModeActive = true;
-    }
-
-    function exitSelectMode() {
-        selectModeActive = false;
-        multiSelect.clearSelections();
-    }
-
-    function handleWindowKeydown(e: KeyboardEvent) {
-        if (e.key === "Escape" && selectModeActive) {
-            exitSelectMode();
-        }
-    }
-
+    // helper functions for SVG cover generation
     function initialsFromName(name: string) {
         if (!name) return "PL";
         const parts = name.trim().split(/\s+/);
@@ -91,89 +65,65 @@
         return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`;
     }
 
-    // Drain any tracks that were dropped onto this playlist while it was active
-    // it reads and clears in one update
-    // so multiple rapid drops won't double append
+    // Drain any dropped pending tracks
     $: if ($playlistPendingTracks[playlistId]?.length) {
         tracks = [...tracks, ...drainPendingTracks(playlistId)];
     }
 
-    // Reactive cover source - updates instantly when playlistCovers changes
+    $: playlist = $playlists.find((p) => p.id === playlistId) || null;
+    $: totalDuration = tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
+
+    // Reactive cover source
     $: coverSrc = (() => {
         if (!playlist) return generateSvgCover("Playlist");
-        
-        // 1. Check local session/custom cover overrides
         const custom = $playlistCovers && $playlistCovers[playlist.id];
         if (custom) return custom;
-        
-        // 2. Check database cover URL
         if (playlist.cover_url) return playlist.cover_url;
-        
-        // 3. Fallback to generated SVG
         return generateSvgCover(playlist.name || "Playlist");
     })();
 
-    $: hasCustomCover =
-        playlist && $playlistCovers && !!$playlistCovers[playlist.id];
+    $: hasCustomCover = !!(playlist && $playlistCovers && $playlistCovers[playlist.id]);
 
-    function handleCoverFile(e: Event) {
-        const input = e.target as HTMLInputElement;
-        const file = input?.files?.[0];
+    function handleCoverUpload(file: File) {
         if (!file || !playlist) return;
         const reader = new FileReader();
         reader.onload = () => {
             const result = reader.result as string;
             if (result && playlist) {
                 setPlaylistCover(playlist.id, result);
-                // Cover will update automatically via reactive statement
             }
         };
         reader.readAsDataURL(file);
-        // Reset input to allow selecting the same file again
-        input.value = "";
     }
 
     async function handleRemoveCover() {
         if (!playlist) return;
-
-        if (
-            !(await confirm(
-                $_("playlist.removeCoverConfirm", { values: { name: playlist.name } }),
-                {
-                    title: $_("playlist.removeCoverTitle"),
-                    confirmLabel: $_("playlist.remove"),
-                    danger: true,
-                },
-            ))
-        )
-            return;
-
+        const ok = await confirm(
+            $_("playlist.removeCoverConfirm", { values: { name: playlist.name } }),
+            {
+                title: $_("playlist.removeCoverTitle"),
+                confirmLabel: $_("playlist.remove"),
+                danger: true,
+            },
+        );
+        if (!ok) return;
         removePlaylistCover(playlist.id);
-        // Cover will update automatically to SVG via reactive statement
     }
-
-    $: totalDuration = tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
-    $: playlist = $playlists.find((p) => p.id === playlistId) || null;
 
     // Download state
     let isDownloading = false;
     let downloadProgress = "";
 
-    // Check if we have downloadable tracks that are NOT yet downloaded
     $: downloadableTracks = tracks.filter((t) => {
-        // Must be downloadable (streaming source) AND not have a local_src yet
         return hasDownloadableTracks([t]) && !t.local_src;
     });
 
     $: hasDownloadable = downloadableTracks.length > 0;
 
-    // Check if everything that CAN be downloaded IS downloaded
     $: allDownloaded =
         tracks.length > 0 &&
         tracks.every((t) => {
-            // If it's local, it's downloaded.
             if (!t.source_type || t.source_type === "local") return true;
-            // If it's streaming, it must have local_src
             return !!t.local_src;
         });
 
@@ -189,10 +139,7 @@
         if (isDownloading) return;
 
         if (needsDownloadLocation()) {
-            addToast(
-                $_("playlist.configureDownloadLocation"),
-                "error",
-            );
+            addToast($_("playlist.configureDownloadLocation"), "error");
             return;
         }
 
@@ -207,9 +154,7 @@
                     const total = progress.total;
 
                     if (progress.bytesTotal) {
-                        const currentMB = formatBytes(
-                            progress.bytesCurrent || 0,
-                        );
+                        const currentMB = formatBytes(progress.bytesCurrent || 0);
                         const totalMB = formatBytes(progress.bytesTotal);
                         downloadProgress = `${current}/${total} (${currentMB}/${totalMB})`;
                     } else {
@@ -219,14 +164,10 @@
             );
 
             showDownloadResult(result);
-            // Refresh playlist tracks to update local_src status
             loadPlaylistData();
         } catch (error) {
             console.error("Download failed:", error);
-            addToast(
-                $_("playlist.downloadFailed"),
-                "error",
-            );
+            addToast($_("playlist.downloadFailed"), "error");
         } finally {
             isDownloading = false;
             downloadProgress = "";
@@ -259,6 +200,7 @@
     }
 
     async function handleDelete() {
+        menuOpen = false;
         if (
             !(await confirm(
                 $_("playlist.deleteConfirm", { values: { name: playlist?.name } }),
@@ -280,108 +222,23 @@
         }
     }
 
-    function startEditing() {
-        editName = playlist?.name || "";
-        isEditing = true;
-    }
-
-    async function handleRename() {
-        if (!editName.trim() || !playlist) return;
-
+    async function handleRename(newName: string) {
+        if (!newName.trim() || !playlist) return;
         try {
-            await renamePlaylist(playlistId, editName.trim());
+            await renamePlaylist(playlistId, newName.trim());
             await loadPlaylists();
-            isEditing = false;
         } catch (error) {
             console.error("Failed to rename playlist:", error);
         }
     }
 
-    function handleKeyDown(e: KeyboardEvent) {
-        if (e.key === "Enter") {
-            handleRename();
-        } else if (e.key === "Escape") {
-            isEditing = false;
-        }
-    }
-
-    // in select mode, Add to Queue / Export to Zip in the header menu 
-    // scope to the current selection; everything else (Play, rename, delete...)
-    // always stays scoped to the whole playlist
-    function getSelectedTracks(): Track[] | undefined {
-        if (!selectModeActive) return undefined;
-        return tracks.filter((t) => $multiSelect.selectedTrackIds.has(t.id));
-    }
-
-    function handleHeaderContextMenu(e: MouseEvent) {
-        e.preventDefault();
-        if (!playlist) return;
-        const selectedTracks = getSelectedTracks();
-        contextMenu.set({
-            visible: true,
-            x: e.clientX,
-            y: e.clientY,
-            items: buildPlaylistContextMenu({
-                playlist,
-                tracks,
-                selectedTracks,
-                variant: "detail",
-                onPlay: handlePlayAll,
-                onAddToQueue: () => {
-                    const targets = selectedTracks ?? tracks;
-                    if (targets.length > 0) addToQueue(targets);
-                },
-                onRename: startEditing,
-                onDelete: handleDelete,
-                onExportZip: () => handleExportZip(selectedTracks),
-                coverInput,
-                t: $_,
-            }),
-        });
-    }
-
-    onMount(() => {
-        loadPlaylistData();
-    });
-
-    // Reload when playlistId changes
-    $: playlistId, loadPlaylistData();
-
-    let menuOpen = false;
-    let menuTriggerEl: HTMLButtonElement;
-
-    function toggleMenu() {
-        menuOpen = !menuOpen;
-    }
-
-    function closeMenu() {
-        if (!menuOpen) return;
+    async function handleExportZip() {
         menuOpen = false;
-        // return focus to the trigger so keyboard users don't lose their place
-        menuTriggerEl?.focus();
-    }
-
-    function handleMenuKeydown(e: KeyboardEvent) {
-        if (!menuOpen) return;
-        if (e.key === 'Escape') {
-            e.stopPropagation();
-            closeMenu();
-        }
-    }
-
-    async function handleExportZip(selected?: Track[]) {
-        closeMenu();
         if (!playlist) return;
-        // select mode active with nothing selected => nothing to export
-        if (selected && selected.length === 0) return;
-        const trackIds = selected?.map((t) => t.id);
-
         try {
             addToast($_("playlist.exporting"), "info");
-
-            const result = await exportPlaylistZip(playlistId, playlist.name, trackIds);
-            if (!result) return; // user cancelled
-
+            const result = await exportPlaylistZip(playlistId, playlist.name);
+            if (!result) return;
             const skipped_count = result.skipped_count;
             const exported = result.track_count - skipped_count;
             const skippedMsg = skipped_count > 0
@@ -395,343 +252,182 @@
             addToast($_("playlist.exportFailed", { values: { error: String(e) } }), "error");
         }
     }
+
+    function handleHeaderContextMenu(e: MouseEvent) {
+        e.preventDefault();
+        if (!playlist) return;
+        contextMenu.set({
+            visible: true,
+            x: e.clientX,
+            y: e.clientY,
+            items: buildPlaylistContextMenu({
+                playlist,
+                tracks,
+                variant: "detail",
+                onPlay: handlePlayAll,
+                onAddToQueue: () => {
+                    if (tracks.length > 0) addToQueue(tracks);
+                },
+                onDelete: handleDelete,
+                onExportZip: handleExportZip,
+                t: $_,
+            }),
+        });
+    }
+
+    onMount(() => {
+        loadPlaylistData();
+    });
+
+    $: playlistId, loadPlaylistData();
 </script>
 
-<svelte:window on:keydown={handleWindowKeydown} />
-
-<div class="playlist-detail">
-    {#if loading}
-        <div class="loading">
-            <div class="spinner"></div>
-            <span
-                >{$_("playlist.loading")}</span
+<DetailView
+    {loading}
+    notFound={!loading && !playlist}
+    notFoundTitle={$_("playlist.notFound")}
+    notFoundActionLabel={$_("playlist.backToPlaylists")}
+    onNotFoundAction={goToPlaylists}
+    title={playlist?.name ?? ""}
+    type={$_("common.playlist")}
+    typeIcon={playlist?.folder_path ? "folder" : undefined}
+    coverSrc={coverSrc}
+    coverAlt={$_("playlist.coverAlt")}
+    coverShape="square"
+    coverPlaceholderIcon="music"
+    onBack={goToPlaylists}
+    backAriaLabel="Back to Playlists"
+    onHeaderContextMenu={handleHeaderContextMenu}
+    editableTitle={true}
+    onRename={handleRename}
+    canEditCover={true}
+    {hasCustomCover}
+    onUploadCover={handleCoverUpload}
+    onRemoveCover={handleRemoveCover}
+    changeCoverTooltip={$_("playlist.changeCoverTooltip")}
+    addCoverTooltip={$_("playlist.addCoverTooltip")}
+    removeCoverTooltip={$_("playlist.removeCoverTooltip")}
+    stats={[
+        $_("playlist.songsCount", { values: { count: tracks.length } }),
+        formatDuration(totalDuration),
+    ]}
+    onPlayAll={handlePlayAll}
+    playAllDisabled={tracks.length === 0}
+    isPlayingThis={$currentPlaylistId === playlistId && $isPlaying}
+    {hasDownloadable}
+    {allDownloaded}
+    {isDownloading}
+    {downloadProgress}
+    onDownloadAll={handleDownloadAll}
+    {tracks}
+    {playlistId}
+    showAlbum={true}
+    playbackContext={{
+        type: "playlist",
+        playlistId,
+        displayName: playlist?.name,
+    }}
+    onTracksUpdated={(updated) => {
+        tracks = updated;
+    }}
+>
+    <!-- Top-nav extra: options dropdown menu -->
+    <svelte:fragment slot="header-extra">
+        <div class="menu-container">
+            <button
+                class="icon-circle-btn"
+                on:click={() => (menuOpen = !menuOpen)}
+                title={$_("playlist.moreOptions")}
+                aria-label={$_("playlist.moreOptions")}
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
             >
-        </div>
-    {:else if playlist}
-        <header
-            class="playlist-header"
-            on:contextmenu={handleHeaderContextMenu}
-            role="region"
-            aria-label="Playlist header"
-        >
-            <div class="header-actions">
-                <div class="menu-wrapper" role="presentation" on:keydown={handleMenuKeydown}>
-                    <button
-                        class="back-btn"
-                        on:click={toggleMenu}
-                        title={$_("playlist.moreOptions")}
-                        bind:this={menuTriggerEl}
-                        aria-haspopup="menu"
-                        aria-expanded={menuOpen}
-                    >
-                        <Icon name="more-horizontal" size={20} />
+                <Icon name="more-horizontal" size={20} />
+            </button>
+
+            {#if menuOpen}
+                <div class="menu-backdrop" role="presentation" on:click={() => (menuOpen = false)}></div>
+                <div class="dropdown-menu" role="menu">
+                    <button class="dropdown-item" role="menuitem" on:click={handleExportZip}>
+                        <Icon name="folder" size={16} />
+                        <span>{$_("contextMenu.exportToZip")}</span>
                     </button>
-
-                    {#if menuOpen}
-                        <div class="menu-backdrop" role="presentation" on:click={closeMenu}></div>
-                        <div class="dropdown-menu" role="menu">
-                            <button class="dropdown-item" role="menuitem" on:click={() => { closeMenu(); startEditing(); }}>
-                                <Icon name="edit" size={16} />
-                                {$_('contextMenu.rename')}
-                            </button>
-                            <button class="dropdown-item" role="menuitem" on:click={() => handleExportZip(getSelectedTracks())}>
-                                <Icon name="folder" size={16} />
-                                {$_('contextMenu.exportToZip')}
-                            </button>
-                            <div class="dropdown-separator"></div>
-                            <button class="dropdown-item danger" role="menuitem" on:click={() => { closeMenu(); handleDelete(); }}>
-                                <Icon name="trash" size={16} />
-                                {$_('contextMenu.deletePlaylist')}
-                            </button>
-                        </div>
-                    {/if}
-                </div>
-
-                <button class="back-btn close-btn" on:click={goToPlaylists} title={$_("common.close")}>
-                    <Icon name="x" size={20} />
-                </button>
-            </div>
-            <div
-                class="playlist-cover"
-                on:mouseenter={() => (coverHovered = true)}
-                on:mouseleave={() => (coverHovered = false)}
-                role="presentation"
-            >
-                <img
-                    src={coverSrc}
-                    alt={$_("playlist.coverAlt")}
-                    class="cover-image"
-                />
-                <input
-                    type="file"
-                    accept="image/*"
-                    bind:this={coverInput}
-                    on:change={(e) => handleCoverFile(e)}
-                    style="display:none"
-                />
-                {#if coverHovered}
-                    <div class="cover-overlay">
-                        {#if hasCustomCover}
-                            <button
-                                class="cover-overlay-btn cover-delete-btn"
-                                on:click={handleRemoveCover}
-                                title={$_("playlist.removeCoverTooltip")}
-                            >
-                                <Icon name="trash" size={20} />
-                            </button>
-                        {/if}
-                        <button
-                            class="cover-overlay-btn cover-add-btn"
-                            on:click={() => coverInput?.click()}
-                            title={hasCustomCover
-                                ? $_("playlist.changeCoverTooltip")
-                                : $_("playlist.addCoverTooltip")}
-                        >
-                            {#if hasCustomCover}
-                                <Icon name="edit" size={20} />
-                            {:else}
-                                <Icon name="plus" size={20} />
-                            {/if}
-                        </button>
-                    </div>
-                {/if}
-            </div>
-            <div class="playlist-info">
-                <span class="playlist-type" title={playlist.folder_path ?? undefined}>
-                    {#if playlist.folder_path}
-                        <Icon name="folder" size={12} />
-                    {/if}
-                    {$_("common.playlist")}
-                </span>
-                {#if isEditing}
-                    <input
-                        type="text"
-                        bind:value={editName}
-                        on:keydown={handleKeyDown}
-                        on:blur={handleRename}
-                        class="edit-input"
-                    />
-                {:else}
-                    <h1 class="playlist-title" on:dblclick={startEditing}>
-                        {playlist.name}
-                    </h1>
-                {/if}
-                <div class="playlist-meta">
-                    <span
-                        >{$_("playlist.songsCount", { values: { count: tracks.length } })}</span
-                    >
-                    <span class="separator">•</span>
-                    <span>{formatDuration(totalDuration)}</span>
-                </div>
-                <div class="playlist-actions">
-                    <button
-                        class="btn-primary play-all-btn"
-                        on:click={handlePlayAll}
-                        disabled={tracks.length === 0}
-                    >
-                        <Icon name="play" size={24} />
-                        {$_("common.play")}
+                    <div class="dropdown-divider"></div>
+                    <button class="dropdown-item danger" role="menuitem" on:click={handleDelete}>
+                        <Icon name="trash" size={16} />
+                        <span>{$_("contextMenu.deletePlaylist")}</span>
                     </button>
-
-                    <button
-                        class="btn-primary add-songs-btn"
-                        on:click={handleAddSongs}
-                    >
-                        <Icon name="plus" size={24} />
-                        {$_("playlist.addSongs")}
-                    </button>
-
-                    {#if hasDownloadable || allDownloaded}
-                        <button
-                            class="btn-secondary download-btn"
-                            on:click={handleDownloadAll}
-                            disabled={isDownloading ||
-                                (!hasDownloadable && !allDownloaded) ||
-                                allDownloaded}
-                            class:downloaded={allDownloaded}
-                        >
-                            {#if isDownloading}
-                                <div class="spinner-sm"></div>
-                                <span>{downloadProgress}</span>
-                            {:else if allDownloaded}
-                                <Icon name="download" size={24} />
-                                <span
-                                    >{$_("album.downloaded")}</span
-                                >
-                            {:else}
-                                <Icon name="download" size={24} />
-                                <span
-                                    >{$_("album.download")}</span
-                                >
-                            {/if}
-                        </button>
-                    {/if}
-
-                </div>
-            </div>
-        </header>
-
-        <div class="playlist-tracks">
-            {#if tracks.length > 0}
-                <TrackList
-                    {tracks}
-                    showAlbum={false}
-                    {playlistId}
-                    multiSelectMode={selectModeActive}
-                    allowMultiSelectEntry={!selectModeActive}
-                    onEnterMultiSelect={enterSelectMode}
-                    playbackContext={{
-                        type: "playlist",
-                        playlistId,
-                        displayName: playlist?.name,
-                    }}
-                />
-            {:else}
-                <div class="empty-state">
-                    <Icon name="music" size={48} />
-                    <h3>
-                        {$_("playlist.emptyTitle")}
-                    </h3>
-                    <p>
-                        {$_("playlist.emptyDescription")}
-                    </p>
                 </div>
             {/if}
         </div>
-    {:else}
-        <div class="not-found">
-            <h2>{$_("playlist.notFound")}</h2>
-            <button class="btn-secondary" on:click={goToPlaylists}
-                >{$_("playlist.backToPlaylists")}</button
-            >
+    </svelte:fragment>
+
+    <!-- Additional Action Button: Add Songs -->
+    <svelte:fragment slot="actions">
+        <button class="btn-action-outline add-songs-btn" on:click={handleAddSongs}>
+            <Icon name="plus" size={18} />
+            <span>{$_("playlist.addSongs")}</span>
+        </button>
+    </svelte:fragment>
+
+    <!-- Empty State -->
+    <svelte:fragment slot="empty">
+        <div class="empty-playlist">
+            <Icon name="music" size={54} />
+            <h3>{$_("playlist.emptyTitle")}</h3>
+            <p>{$_("playlist.emptyDescription")}</p>
+            <button class="btn-primary add-songs-large" on:click={handleAddSongs}>
+                <Icon name="plus" size={20} />
+                <span>{$_("playlist.addSongs")}</span>
+            </button>
         </div>
-    {/if}
-</div>
+    </svelte:fragment>
+</DetailView>
 
 <style>
-    .playlist-detail {
-        display: flex;
-        flex-direction: column;
-        height: 100%;
-    }
-
-    .loading,
-    .not-found {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        height: 100%;
-        gap: var(--spacing-md);
-        color: var(--text-secondary);
-    }
-
-    .spinner {
-        width: 32px;
-        height: 32px;
-        border: 3px solid var(--bg-highlight);
-        border-top-color: var(--accent-primary);
-        border-radius: 50%;
-        animation: spin 1s linear infinite;
-    }
-
-    @keyframes spin {
-        to {
-            transform: rotate(360deg);
-        }
-    }
-
-    .playlist-header {
-        display: flex;
-        gap: var(--spacing-lg);
-        padding: var(--spacing-lg);
-        background: linear-gradient(
-            180deg,
-            var(--bg-surface) 0%,
-            var(--bg-base) 100%
-        );
+    .menu-container {
         position: relative;
     }
 
-    .header-actions {
-        position: absolute;
-        top: var(--spacing-md);
-        right: var(--spacing-md);
-        display: flex;
-        gap: var(--spacing-xs);
-        z-index: 10;
-    }
-
-    .menu-wrapper {
-        position: relative;
-    }
-
-    .back-btn {
-        width: 40px;
-        height: 40px;
+    .icon-circle-btn {
+        width: 36px;
+        height: 36px;
         border-radius: var(--radius-full);
-        background-color: rgba(0, 0, 0, 0.5);
-        backdrop-filter: blur(8px);
+        background: rgba(0, 0, 0, 0.4);
         color: var(--text-primary);
+        border: none;
         display: flex;
         align-items: center;
         justify-content: center;
+        cursor: pointer;
         transition: all var(--transition-fast);
-        border: 1px solid rgba(255, 255, 255, 0.1);
     }
 
-    .back-btn::after {
-        content: attr(title);
-        position: absolute;
-        bottom: 100%;
-        left: 50%;
-        transform: translateX(-50%);
-        padding: var(--spacing-xs) var(--spacing-sm);
-        background-color: var(--bg-surface);
-        color: var(--text-primary);
-        font-size: var(--font-size-xs);
-        border-radius: var(--radius-sm);
-        white-space: nowrap;
-        opacity: 0;
-        pointer-events: none;
-        transition: opacity var(--transition-fast);
-        margin-bottom: 8px;
-        box-shadow: var(--shadow-md);
-    }
-
-    .back-btn:hover::after {
-        opacity: 1;
-    }
-
-    .back-btn:hover {
-        background-color: rgba(220, 38, 38, 0.9);
-        border-color: rgba(220, 38, 38, 0.4);
-        transform: scale(1.05);
-    }
-
-    .back-btn:active {
-        transform: scale(0.95);
+    .icon-circle-btn:hover {
+        background: rgba(0, 0, 0, 0.7);
+        transform: scale(1.08);
     }
 
     .menu-backdrop {
         position: fixed;
         inset: 0;
-        z-index: 20;
+        z-index: 99;
     }
 
     .dropdown-menu {
         position: absolute;
-        top: calc(100% + 6px);
+        top: calc(100% + 8px);
         right: 0;
-        z-index: 30;
-        min-width: 180px;
-        background-color: var(--bg-surface);
+        z-index: 100;
+        background: var(--bg-surface);
         border: 1px solid var(--border-color);
         border-radius: var(--radius-md);
         box-shadow: var(--shadow-lg);
-        padding: var(--spacing-xs) 0;
+        min-width: 180px;
+        padding: 4px 0;
         display: flex;
         flex-direction: column;
+        animation: fadeIn 0.12s ease-out;
     }
 
     .dropdown-item {
@@ -739,283 +435,83 @@
         align-items: center;
         gap: var(--spacing-sm);
         padding: var(--spacing-sm) var(--spacing-md);
-        font-size: 0.9rem;
-        color: var(--text-secondary);
-        background: none;
+        background: transparent;
         border: none;
-        text-align: left;
+        color: var(--text-primary);
+        font-size: var(--font-size-sm);
         cursor: pointer;
-        transition: background-color var(--transition-fast), color var(--transition-fast);
+        text-align: left;
         width: 100%;
+        transition: background-color var(--transition-fast);
     }
 
     .dropdown-item:hover {
-        background-color: var(--bg-elevated);
-        color: var(--text-primary);
+        background-color: var(--bg-highlight);
     }
 
     .dropdown-item.danger {
-        color: var(--error-color, #f15e6c);
+        color: var(--error-color);
     }
 
     .dropdown-item.danger:hover {
-        background-color: rgba(241, 94, 108, 0.1);
-        color: var(--error-color, #f15e6c);
+        background-color: rgba(241, 94, 108, 0.15);
     }
 
-    .dropdown-separator {
+    .dropdown-divider {
         height: 1px;
         background-color: var(--border-color);
-        margin: var(--spacing-xs) 0;
+        margin: 4px 0;
     }
 
-    .playlist-cover {
-        width: 232px;
-        height: 232px;
-        border-radius: var(--radius-sm);
-        background: linear-gradient(
-            135deg,
-            var(--bg-highlight) 0%,
-            var(--bg-surface) 100%
-        );
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        flex-shrink: 0;
-        color: var(--text-subdued);
-        box-shadow: var(--shadow-lg);
-        position: relative;
-        overflow: hidden;
-        cursor: pointer;
-    }
-
-    .cover-image {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-        display: block;
-        transition: transform 0.3s ease;
-    }
-
-    .playlist-cover:hover .cover-image {
-        transform: scale(1.05);
-    }
-
-    .cover-overlay {
-        position: absolute;
-        inset: 0;
-        background: linear-gradient(
-            to top,
-            rgba(0, 0, 0, 0.7) 0%,
-            rgba(0, 0, 0, 0.3) 50%,
-            rgba(0, 0, 0, 0) 100%
-        );
-        display: flex;
-        align-items: flex-end;
-        justify-content: space-between;
-        padding: var(--spacing-sm);
-        opacity: 0;
-        animation: fadeIn 0.2s ease forwards;
-    }
-
-    @keyframes fadeIn {
-        to {
-            opacity: 1;
-        }
-    }
-
-    .cover-overlay-btn {
-        width: 36px;
-        height: 36px;
-        border-radius: var(--radius-full);
-        background-color: rgba(0, 0, 0, 0.6);
-        backdrop-filter: blur(8px);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: white;
-        transition: all var(--transition-fast);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-    }
-
-    .cover-overlay-btn:hover {
-        background-color: rgba(0, 0, 0, 0.8);
-        transform: scale(1.1);
-        border-color: rgba(255, 255, 255, 0.2);
-    }
-
-    .cover-delete-btn:hover {
-        background-color: rgba(241, 94, 108, 0.8);
-        border-color: rgba(241, 94, 108, 0.4);
-    }
-
-    .cover-add-btn:hover {
-        background-color: var(--accent-primary);
-        border-color: var(--accent-primary);
-    }
-
-    .playlist-info {
-        display: flex;
-        flex-direction: column;
-        justify-content: flex-end;
-        align-items: flex-start;
-        min-width: 0;
-        flex: 1;
-    }
-
-    .playlist-type {
-        font-size: var(--font-size-xs);
-        font-weight: var(--font-weight-semibold);
-        text-transform: uppercase;
-        color: var(--text-primary);
-    }
-
-    .playlist-title {
-        font-size: 3rem;
-        font-weight: var(--font-weight-bold);
-        line-height: 1.1;
-        margin: var(--spacing-sm) 0;
-        color: var(--text-primary);
-        cursor: text;
-    }
-
-    .edit-input {
-        font-size: 3rem;
-        font-weight: var(--font-weight-bold);
-        background-color: var(--bg-surface);
-        border: 2px solid var(--accent-primary);
-        border-radius: var(--radius-sm);
-        padding: var(--spacing-xs) var(--spacing-sm);
-        margin: var(--spacing-sm) 0;
-        width: 100%;
-    }
-
-    .playlist-meta {
-        display: flex;
-        flex-direction: row;
-        flex-wrap: wrap;
+    .btn-action-outline {
+        display: inline-flex;
         align-items: center;
         gap: var(--spacing-sm);
-        font-size: var(--font-size-base);
-        color: var(--text-secondary);
-        margin-bottom: var(--spacing-lg);
-    }
-
-    .separator {
-        color: var(--text-subdued);
-    }
-
-    .playlist-actions {
-        display: flex;
-        align-items: center;
-        gap: var(--spacing-sm);
-    }
-
-    .play-all-btn,
-    .add-songs-btn {
-        font-size: var(--font-size-md);
-        padding: var(--spacing-sm) var(--spacing-xl);
-    }
-
-    .playlist-tracks {
-        flex: 1;
-        overflow-y: auto;
-    }
-
-    .empty-state {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        height: 100%;
-        gap: var(--spacing-sm);
-        color: var(--text-subdued);
-        text-align: center;
-    }
-
-    .empty-state h3 {
-        font-size: 1.25rem;
-        font-weight: var(--font-weight-semibold);
-        color: var(--text-primary);
-    }
-
-    .empty-state p {
-        font-size: var(--font-size-base);
-    }
-
-    .btn-secondary.downloaded {
-        border-color: var(--accent-primary);
-        color: var(--accent-primary);
-        cursor: default;
-    }
-
-    .btn-secondary.downloaded:hover {
-        transform: none;
-    }
-
-    .spinner-sm {
-        width: 16px;
-        height: 16px;
-        border: 2px solid var(--bg-highlight);
-        border-top-color: var(--text-primary);
-        border-radius: 50%;
-        animation: spin 1s linear infinite;
-    }
-
-    /* ── Mobile ── */
-    :global(html.layout-mobile) .playlist-header {
-        flex-direction: column;
-        align-items: center;
-        text-align: center;
-        padding: var(--spacing-md)
-            var(--spacing-md) var(--spacing-md);
-        gap: var(--spacing-md);
-    }
-
-    :global(html.layout-mobile) .header-actions {
-        top: var(--spacing-sm);
-        right: var(--spacing-sm);
-    }
-
-    :global(html.layout-mobile) .playlist-cover {
-        width: 160px;
-        height: 160px;
-    }
-
-    :global(html.layout-mobile) .playlist-info {
-        align-items: center;
-    }
-
-    :global(html.layout-mobile) .playlist-title {
-        font-size: 1.5rem;
-        word-break: break-word;
-    }
-
-    :global(html.layout-mobile) .edit-input {
-        font-size: 1.5rem;
-    }
-
-    :global(html.layout-mobile) .playlist-meta {
-        flex-wrap: wrap;
-        margin-bottom: var(--spacing-md);
-    }
-
-    :global(html.layout-mobile) .playlist-actions {
-        flex-wrap: wrap;
-        justify-content: center;
-        gap: var(--spacing-sm);
-    }
-
-    :global(html.layout-mobile) .play-all-btn,
-    :global(html.layout-mobile) .add-songs-btn,
-    :global(html.layout-mobile) .btn-secondary {
         padding: var(--spacing-sm) var(--spacing-lg);
+        background: transparent;
+        color: var(--text-primary);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-full);
         font-size: var(--font-size-base);
-        min-height: 44px;
+        font-weight: var(--font-weight-semibold);
+        cursor: pointer;
+        transition: all var(--transition-fast);
     }
 
-    :global(html.layout-mobile) .icon-btn {
-        min-width: 44px;
-        min-height: 44px;
+    .btn-action-outline:hover {
+        border-color: var(--text-primary);
+        transform: scale(1.04);
+    }
+
+    .empty-playlist {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: var(--spacing-xl) 0;
+        gap: var(--spacing-md);
+        color: var(--text-secondary);
+        text-align: center;
+    }
+
+    .add-songs-large {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--spacing-sm);
+        padding: var(--spacing-sm) var(--spacing-xl);
+        background: var(--accent-primary);
+        color: #000;
+        font-size: var(--font-size-base);
+        font-weight: var(--font-weight-bold);
+        border-radius: var(--radius-full);
+        border: none;
+        cursor: pointer;
+        transition: transform var(--transition-fast);
+        margin-top: var(--spacing-sm);
+    }
+
+    .add-songs-large:hover {
+        transform: scale(1.05);
+        background: var(--accent-hover);
     }
 </style>

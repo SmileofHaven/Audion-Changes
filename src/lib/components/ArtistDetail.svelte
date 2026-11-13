@@ -12,14 +12,9 @@
         type MbSimilarArtist,
         type MbDiscographyItem,
     } from "$lib/api/tauri";
-    import { playTracks } from "$lib/stores/player";
-    import {
-        goToArtists,
-        goToAlbumDetail,
-        goToArtistDetail,
-    } from "$lib/stores/view";
+    import { playTracks, currentArtistName, isPlaying } from "$lib/stores/player";
+    import { goToArtists, goToArtistDetail } from "$lib/stores/view";
     import AlbumGrid from "./AlbumGrid.svelte";
-    import TrackList from "./track-list/TrackList.svelte";
     import MediaCard from "./MediaCard.svelte";
     import {
         downloadTracks,
@@ -31,8 +26,9 @@
     import { addToast } from "$lib/stores/toast";
     import { contextMenu } from "$lib/stores/ui";
     import { buildArtistContextMenu } from "$lib/menus/contextMenus";
-    import { _, locale } from "svelte-i18n";
+    import { _ } from "svelte-i18n";
     import Icon from "$lib/components/Icon.svelte";
+    import DetailView from "./DetailView.svelte";
 
     export let artistName: string;
 
@@ -82,7 +78,7 @@
 
     function handleCoverError(mbid: string) {
         failedCovers.add(mbid);
-        failedCovers = failedCovers; // trigger reactivity
+        failedCovers = failedCovers;
     }
 
     async function loadMbInfo() {
@@ -126,8 +122,6 @@
     }
 
     function handleAboutTab() {
-        activeTab = "about";
-        // Fire all three in parallel — each self-guards against double-fetching
         loadMbInfo();
         loadSimilarArtists();
         loadDiscography();
@@ -162,7 +156,7 @@
     }
 
     function getArtistInitial(name: string): string {
-        return name.charAt(0).toUpperCase();
+        return name ? name.charAt(0).toUpperCase() : "A";
     }
 
     // Download state
@@ -173,44 +167,19 @@
     let artistPictureUrl: string | null = null;
     let failedImage = false;
 
-    // Get artist picture URL from Tidal search
     async function getArtistPicture(name: string) {
-        console.log("[ArtistDetail] getArtistPicture called for:", name);
-
-        if (!name) {
-            console.log("[ArtistDetail] No artist name provided");
-            return;
-        }
-
+        if (!name) return;
         try {
-            console.log("[ArtistDetail] Checking for tidalSearchPlugin...");
             const plugin = (window as any).tidalSearchPlugin;
-            console.log("[ArtistDetail] Plugin available:", !!plugin);
-
-            if (!plugin) {
-                console.log("[ArtistDetail] Plugin not available yet");
-                return;
-            }
-
-            console.log("[ArtistDetail] Calling searchArtistPictureForRPC...");
-            // Call Tidal search plugin to get artist image
+            if (!plugin) return;
             const result = await plugin.searchArtistPictureForRPC(name);
-            console.log("[ArtistDetail] Result from plugin:", result);
-
             if (result) {
                 artistPictureUrl = result;
                 failedImage = false;
             }
         } catch (error) {
-            console.log(
-                "[ArtistDetail] Failed to fetch artist picture:",
-                error,
-            );
+            console.log("[ArtistDetail] Failed to fetch artist picture:", error);
         }
-    }
-
-    function handleImageError() {
-        failedImage = true;
     }
 
     onMount(() => {
@@ -218,11 +187,9 @@
         getArtistPicture(artistName);
     });
 
-    // Reload when artistName changes
     $: if (artistName) {
         loadArtistData();
         getArtistPicture(artistName);
-        // Reset MB info so it gets re-fetched for the new artist
         mbInfo = null;
         mbFetched = false;
         mbError = null;
@@ -233,9 +200,7 @@
         showAllDiscoTypes = false;
         failedCovers = new Set();
         if (activeTab === "about") {
-            loadMbInfo();
-            loadSimilarArtists();
-            loadDiscography();
+            handleAboutTab();
         }
     }
 
@@ -289,315 +254,255 @@
     }
 </script>
 
-<div class="artist-detail">
-    {#if loading}
-        <div class="loading">
-            <div class="spinner"></div>
-            <span>{$_('artist.loading')}</span>
-        </div>
-    {:else}
-        <header
-            class="artist-header"
-            on:contextmenu={handleContextMenu}
-            role="banner"
-        >
-            <button
-                class="back-btn"
-                on:click={goToArtists}
-                aria-label="Go back to artists"
-            >
-                <Icon name="arrow-left" size={24} />
-            </button>
-            <div class="artist-avatar">
-                {#if artistPictureUrl && !failedImage}
-                    <img
-                        src={artistPictureUrl}
-                        alt={artistName}
-                        class="artist-picture"
-                        on:error={handleImageError}
-                    />
-                {:else}
-                    <span class="artist-initial"
-                        >{getArtistInitial(artistName)}</span
-                    >
-                {/if}
-            </div>
-            <div class="artist-info">
-                <span class="artist-type">{$_('artist.type')}</span>
-                <h1 class="artist-name">{artistName}</h1>
-                <div class="artist-meta">
-                    <span>{$_('artist.albums', { values: { count: albums.length } })}</span>
-                    <span class="separator">•</span>
-                    <span>{$_('artist.songs', { values: { count: tracks.length } })}</span>
-                    <span class="separator">•</span>
-                    <span>{formatDuration(totalDuration)}</span>
-                </div>
-                <div class="artist-actions">
-                    <button
-                        class="btn-primary play-all-btn"
-                        on:click={handlePlayAll}
-                    >
-                        <Icon name="play" size={24} />
-                        {$_('artist.playAll')}
-                    </button>
-
-                    {#if hasDownloadable}
-                        <button
-                            class="btn-secondary download-btn"
-                            on:click={handleDownloadAll}
-                            disabled={isDownloading}
-                        >
-                            {#if isDownloading}
-                                <div class="spinner-sm"></div>
-                                <span>{downloadProgress}</span>
-                            {:else}
-                                <Icon name="download" size={24} />
-                                <span>{$_('artist.downloadAll')}</span>
-                            {/if}
-                        </button>
-                    {/if}
-                </div>
-            </div>
-        </header>
-
-        <div class="tabs">
-            <button
-                class="tab"
-                class:active={activeTab === "albums"}
-                on:click={() => (activeTab = "albums")}
-            >
-                {$_('artist.tabAlbums')}
-            </button>
-            <button
-                class="tab"
-                class:active={activeTab === "tracks"}
-                on:click={() => (activeTab = "tracks")}
-            >
-                {$_('artist.tabTracks')}
-            </button>
-            <button
-                class="tab"
-                class:active={activeTab === "about"}
-                on:click={handleAboutTab}
-            >
-                {$_('artist.tabAbout')}
-            </button>
-        </div>
-
-        <div class="artist-content">
-            {#if activeTab === "albums"}
+<DetailView
+    {loading}
+    notFound={!loading && !artistName}
+    notFoundTitle={$_("artist.notFound") || "Artist Not Found"}
+    notFoundActionLabel={$_("artist.backToArtists") || "Back to Artists"}
+    onNotFoundAction={goToArtists}
+    title={artistName}
+    type={$_("artist.type")}
+    typeIcon="user"
+    coverSrc={artistPictureUrl && !failedImage ? artistPictureUrl : null}
+    coverAlt={artistName}
+    coverShape="circle"
+    avatarInitials={getArtistInitial(artistName)}
+    coverPlaceholderIcon="user"
+    onBack={goToArtists}
+    backAriaLabel="Back to Artists"
+    onHeaderContextMenu={handleContextMenu}
+    stats={[
+        $_("artist.albums", { values: { count: albums.length } }),
+        $_("artist.songs", { values: { count: tracks.length } }),
+        formatDuration(totalDuration),
+    ]}
+    onPlayAll={handlePlayAll}
+    playAllDisabled={tracks.length === 0}
+    isPlayingThis={$currentArtistName === artistName && $isPlaying}
+    {hasDownloadable}
+    {isDownloading}
+    {downloadProgress}
+    onDownloadAll={handleDownloadAll}
+    {tracks}
+    showAlbum={true}
+    playbackContext={{
+        type: "artist",
+        artistName,
+        displayName: artistName,
+    }}
+    tabs={[
+        { id: "albums", label: $_("artist.tabAlbums"), count: albums.length },
+        { id: "tracks", label: $_("artist.tabTracks"), count: tracks.length },
+        { id: "about", label: $_("artist.tabAbout") },
+    ]}
+    bind:activeTab
+    onTabChange={(tabId) => {
+        if (tabId === "about") handleAboutTab();
+    }}
+>
+    <!-- Custom tab content: Albums Grid or About Panel -->
+    <svelte:fragment slot="tab-content">
+        {#if activeTab === "albums"}
+            <div class="albums-tab-pane">
                 <AlbumGrid {albums} />
-            {:else if activeTab === "tracks"}
-                <TrackList
-                    {tracks}
-                    showAlbum={true}
-                    playbackContext={{
-                        type: "artist",
-                        artistName,
-                        displayName: artistName,
-                    }}
-                />
-            {:else}
-                <!-- About tab: MusicBrainz info -->
-                <div class="about-panel">
-                    {#if mbLoading}
+            </div>
+        {:else if activeTab === "about"}
+            <div class="about-panel">
+                {#if mbLoading}
+                    <div class="about-loading">
+                        <div class="spinner"></div>
+                        <span>{$_("artist.lookingUp")}</span>
+                    </div>
+                {:else if mbError}
+                    <p class="about-error">{mbError}</p>
+                {:else if mbInfo}
+                    {#if mbInfo.genres.length > 0}
+                        <section class="about-section">
+                            <h3 class="about-heading">{$_("artist.genres")}</h3>
+                            <div class="genre-pills">
+                                {#each mbInfo.genres as genre}
+                                    <span class="genre-pill">{genre}</span>
+                                {/each}
+                            </div>
+                        </section>
+                    {/if}
+
+                    {#if mbInfo.bio}
+                        <section class="about-section">
+                            <h3 class="about-heading">{$_("artist.about")}</h3>
+                            <p class="about-bio">{mbInfo.bio}</p>
+                        </section>
+                    {/if}
+
+                    {#if mbInfo.wikipedia_url}
+                        <a
+                            class="wiki-link"
+                            href={mbInfo.wikipedia_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                        >
+                            <Icon name="external-link" size={16} />
+                            {$_("artist.readOnWikipedia")}
+                        </a>
+                    {/if}
+
+                    {#if mbInfo.disambiguation}
+                        <p class="about-disambiguation">
+                            ({mbInfo.disambiguation})
+                        </p>
+                    {/if}
+
+                    <p class="mb-attribution">{$_("artist.dataFromMusicBrainz")}</p>
+                {:else}
+                    <div class="about-empty">
+                        <p>{$_("artist.noInfoFound")}</p>
+                    </div>
+                {/if}
+
+                <!-- Similar / Related Artists -->
+                <section class="about-section">
+                    <h3 class="about-heading">{$_("artist.relatedArtists")}</h3>
+                    {#if similarLoading}
                         <div class="about-loading">
                             <div class="spinner"></div>
-                            <span>{$_('artist.lookingUp')}</span>
+                            <span>{$_("artist.lookingUpRelated")}</span>
                         </div>
-                    {:else if mbError}
-                        <p class="about-error">{mbError}</p>
-                    {:else if mbInfo}
-                        {#if mbInfo.genres.length > 0}
-                            <section class="about-section">
-                                <h3 class="about-heading">{$_('artist.genres')}</h3>
-                                <div class="genre-pills">
-                                    {#each mbInfo.genres as genre}
-                                        <span class="genre-pill">{genre}</span>
-                                    {/each}
-                                </div>
-                            </section>
-                        {/if}
-
-                        {#if mbInfo.bio}
-                            <section class="about-section">
-                                <h3 class="about-heading">{$_('artist.about')}</h3>
-                                <p class="about-bio">{mbInfo.bio}</p>
-                            </section>
-                        {/if}
-
-                        {#if mbInfo.wikipedia_url}
-                            <a
-                                class="wiki-link"
-                                href={mbInfo.wikipedia_url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                            >
-                                <Icon name="external-link" size={16} />
-                                {$_('artist.readOnWikipedia')}
-                            </a>
-                        {/if}
-
-                        {#if mbInfo.disambiguation}
-                            <p class="about-disambiguation">
-                                ({mbInfo.disambiguation})
-                            </p>
-                        {/if}
-
-                        <p class="mb-attribution">{$_('artist.dataFromMusicBrainz')}</p>
-                    {:else}
-                        <div class="about-empty">
-                            <p>{$_('artist.noInfoFound')}</p>
-                        </div>
-                    {/if}
-
-                    <!-- ── Similar / Related Artists ── -->
-                    <section class="about-section">
-                        <h3 class="about-heading">{$_('artist.relatedArtists')}</h3>
-                        {#if similarLoading}
-                            <div class="about-loading">
-                                <div class="spinner"></div>
-                                <span>{$_('artist.lookingUpRelated')}</span>
-                            </div>
-                        {:else if similarArtists.length > 0}
-                            <div class="similar-list">
-                                {#each similarArtists as a}
-                                    <MediaCard
-                                        variant="round"
-                                        primaryText={a.name}
-                                        secondaryText={a.relation_type}
-                                        isPinned={false}
-                                        on:click={() =>
-                                            goToArtistDetail(a.name)}
-                                    >
-                                        <svelte:fragment slot="cover">
-                                            <div class="artist-initial-sm">
-                                                {a.name.charAt(0).toUpperCase()}
-                                            </div>
-                                        </svelte:fragment>
-                                        <svelte:fragment slot="extra-info">
-                                            {#if a.in_library}
-                                                <span
-                                                    class="in-library-dot"
-                                                    title="In your library"
-                                                    >•</span
-                                                >
-                                            {/if}
-                                        </svelte:fragment>
-                                    </MediaCard>
-                                {/each}
-                            </div>
-                        {:else if similarFetched}
-                            <p class="about-empty-sm">
-                                {$_('artist.noRelatedFound')}
-                            </p>
-                        {/if}
-                    </section>
-
-                    <!-- ── Discography ── -->
-                    <section class="about-section">
-                        <div class="disco-section-header">
-                            <h3 class="about-heading">
-                                {$_('artist.discography')}
-                            </h3>
-                            {#if discoFetched && (hiddenDiscoCount > 0 || showAllDiscoTypes)}
-                                <button
-                                    class="disco-toggle-btn"
-                                    on:click={() =>
-                                        (showAllDiscoTypes =
-                                            !showAllDiscoTypes)}
+                    {:else if similarArtists.length > 0}
+                        <div class="similar-list">
+                            {#each similarArtists as a}
+                                <MediaCard
+                                    variant="round"
+                                    primaryText={a.name}
+                                    secondaryText={a.relation_type}
+                                    isPinned={false}
+                                    on:click={() => goToArtistDetail(a.name)}
                                 >
-                                    {showAllDiscoTypes
-                                        ? $_('artist.albumsAndSingles')
-                                        : $_('artist.showAll', { values: { count: discography.length } })}
-                                </button>
-                            {/if}
+                                    <svelte:fragment slot="cover">
+                                        <div class="artist-initial-sm">
+                                            {a.name.charAt(0).toUpperCase()}
+                                        </div>
+                                    </svelte:fragment>
+                                    <svelte:fragment slot="extra-info">
+                                        {#if a.in_library}
+                                            <span
+                                                class="in-library-dot"
+                                                title="In your library"
+                                                >•</span
+                                            >
+                                        {/if}
+                                    </svelte:fragment>
+                                </MediaCard>
+                            {/each}
                         </div>
-                        {#if discoLoading}
-                            <div class="about-loading">
-                                <div class="spinner"></div>
-                                <span>{$_('artist.loadingDiscography')}</span>
-                            </div>
-                        {:else if filteredDisco.length > 0}
-                            <div class="disco-grid">
-                                {#each filteredDisco as item (item.mbid)}
-                                    <MediaCard
-                                        primaryText={item.title}
-                                        secondaryText={item.year
-                                            ? `${item.release_type} • ${item.year}`
-                                            : item.release_type}
-                                        ariaLabel={item.title}
-                                    >
-                                        <svelte:fragment slot="cover">
-                                            {#if !failedCovers.has(item.mbid)}
-                                                <img
-                                                    class="disco-cover"
-                                                    src={item.cover_url}
-                                                    alt={item.title}
-                                                    loading="lazy"
-                                                    on:error={() =>
-                                                        handleCoverError(
-                                                            item.mbid,
-                                                        )}
-                                                />
-                                            {:else}
-                                                <div
-                                                    class="disco-cover-placeholder {discoTypeClass(
-                                                        item.release_type,
-                                                    )}"
-                                                >
-                                                    {#if item.release_type.toLowerCase() === "album"}
-                                                        <Icon name="disc" size={28} />
-                                                    {:else if item.release_type.toLowerCase() === "single"}
-                                                        <Icon name="music" size={28} />
-                                                    {:else if item.release_type.toLowerCase() === "ep"}
-                                                        <Icon name="disc" size={28} />
-                                                    {:else if item.release_type.toLowerCase() === "live"}
-                                                        <Icon name="mic-2" size={28} />
-                                                    {:else if item.release_type.toLowerCase() === "compilation"}
-                                                        <Icon name="library" size={28} />
-                                                    {:else if item.release_type.toLowerCase() === "soundtrack"}
-                                                        <Icon name="disc-3" size={28} />
-                                                    {:else}
-                                                        <Icon name="disc" size={28} />
-                                                    {/if}
-                                                </div>
-                                            {/if}
-                                        </svelte:fragment>
-                                    </MediaCard>
-                                {/each}
-                            </div>
-                        {:else if discoFetched}
-                            <p class="about-empty-sm">{$_('artist.noDiscography')}</p>
+                    {:else if similarFetched}
+                        <p class="about-empty-sm">
+                            {$_("artist.noRelatedFound")}
+                        </p>
+                    {/if}
+                </section>
+
+                <!-- Discography -->
+                <section class="about-section">
+                    <div class="disco-section-header">
+                        <h3 class="about-heading">
+                            {$_("artist.discography")}
+                        </h3>
+                        {#if discoFetched && (hiddenDiscoCount > 0 || showAllDiscoTypes)}
+                            <button
+                                class="disco-toggle-btn"
+                                on:click={() => (showAllDiscoTypes = !showAllDiscoTypes)}
+                            >
+                                {showAllDiscoTypes
+                                    ? $_("artist.albumsAndSingles")
+                                    : $_("artist.showAll", { values: { count: discography.length } })}
+                            </button>
                         {/if}
-                    </section>
-                </div>
-            {/if}
-        </div>
-    {/if}
-</div>
+                    </div>
+                    {#if discoLoading}
+                        <div class="about-loading">
+                            <div class="spinner"></div>
+                            <span>{$_("artist.loadingDiscography")}</span>
+                        </div>
+                    {:else if filteredDisco.length > 0}
+                        <div class="disco-grid">
+                            {#each filteredDisco as item (item.mbid)}
+                                <MediaCard
+                                    primaryText={item.title}
+                                    secondaryText={item.year
+                                        ? `${item.release_type} • ${item.year}`
+                                        : item.release_type}
+                                    ariaLabel={item.title}
+                                >
+                                    <svelte:fragment slot="cover">
+                                        {#if !failedCovers.has(item.mbid)}
+                                            <img
+                                                class="disco-cover"
+                                                src={item.cover_url}
+                                                alt={item.title}
+                                                loading="lazy"
+                                                on:error={() => handleCoverError(item.mbid)}
+                                            />
+                                        {:else}
+                                            <div
+                                                class="disco-cover-placeholder {discoTypeClass(item.release_type)}"
+                                            >
+                                                {#if item.release_type.toLowerCase() === "album"}
+                                                    <Icon name="disc" size={28} />
+                                                {:else if item.release_type.toLowerCase() === "single"}
+                                                    <Icon name="music" size={28} />
+                                                {:else if item.release_type.toLowerCase() === "ep"}
+                                                    <Icon name="disc" size={28} />
+                                                {:else if item.release_type.toLowerCase() === "live"}
+                                                    <Icon name="mic-2" size={28} />
+                                                {:else if item.release_type.toLowerCase() === "compilation"}
+                                                    <Icon name="library" size={28} />
+                                                {:else if item.release_type.toLowerCase() === "soundtrack"}
+                                                    <Icon name="disc-3" size={28} />
+                                                {:else}
+                                                    <Icon name="disc" size={28} />
+                                                {/if}
+                                            </div>
+                                        {/if}
+                                    </svelte:fragment>
+                                </MediaCard>
+                            {/each}
+                        </div>
+                    {:else if discoFetched}
+                        <p class="about-empty-sm">{$_("artist.noDiscography")}</p>
+                    {/if}
+                </section>
+            </div>
+        {/if}
+    </svelte:fragment>
+</DetailView>
 
 <style>
-    .artist-detail {
-        display: flex;
-        flex-direction: column;
-        height: 100%;
+    .albums-tab-pane {
+        width: 100%;
+        min-height: 400px;
     }
 
-    .loading {
+    .about-panel {
         display: flex;
         flex-direction: column;
+        gap: var(--spacing-xl);
+        max-width: 900px;
+        padding-bottom: var(--spacing-xl);
+    }
+
+    .about-loading {
+        display: flex;
         align-items: center;
-        justify-content: center;
-        height: 100%;
         gap: var(--spacing-md);
         color: var(--text-secondary);
+        font-size: var(--font-size-sm);
+        padding: var(--spacing-xl) 0;
     }
 
     .spinner {
-        width: 32px;
-        height: 32px;
-        border: 3px solid var(--bg-highlight);
+        width: 24px;
+        height: 24px;
+        border: 2px solid var(--bg-highlight);
         border-top-color: var(--accent-primary);
         border-radius: 50%;
         animation: spin 1s linear infinite;
@@ -607,197 +512,6 @@
         to {
             transform: rotate(360deg);
         }
-    }
-
-    .artist-header {
-        display: flex;
-        gap: var(--spacing-lg);
-        padding: var(--spacing-lg);
-        background: linear-gradient(
-            180deg,
-            var(--bg-surface) 0%,
-            var(--bg-base) 100%
-        );
-        position: relative;
-    }
-
-    .back-btn {
-        position: absolute;
-        top: var(--spacing-md);
-        left: var(--spacing-md);
-        width: 32px;
-        height: 32px;
-        border-radius: var(--radius-full);
-        background-color: rgba(0, 0, 0, 0.5);
-        color: var(--text-primary);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: all var(--transition-fast);
-    }
-
-    .back-btn:hover {
-        background-color: rgba(0, 0, 0, 0.7);
-        transform: scale(1.1);
-    }
-
-    .artist-avatar {
-        width: 200px;
-        height: 200px;
-        border-radius: var(--radius-full);
-        background: linear-gradient(
-            135deg,
-            var(--accent-primary) 0%,
-            #1a1a1a 100%
-        );
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        flex-shrink: 0;
-        box-shadow: var(--shadow-lg);
-    }
-
-    .artist-initial {
-        font-size: 4rem;
-        font-weight: var(--font-weight-bold);
-        color: var(--text-primary);
-    }
-
-    .artist-picture {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-        border-radius: var(--radius-full);
-    }
-
-    .artist-info {
-        display: flex;
-        flex-direction: column;
-        justify-content: flex-end;
-        align-items: flex-start;
-        min-width: 0;
-        flex: 1;
-    }
-
-    .artist-type {
-        font-size: var(--font-size-xs);
-        font-weight: var(--font-weight-semibold);
-        text-transform: uppercase;
-        color: var(--text-primary);
-    }
-
-    .artist-name {
-        font-size: 3rem;
-        font-weight: var(--font-weight-bold);
-        line-height: 1.1;
-        margin: var(--spacing-sm) 0;
-        color: var(--text-primary);
-    }
-
-    .artist-meta {
-        display: flex;
-        flex-direction: row;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: var(--spacing-sm);
-        font-size: var(--font-size-base);
-        color: var(--text-secondary);
-        margin-bottom: var(--spacing-lg);
-    }
-
-    .separator {
-        color: var(--text-subdued);
-    }
-
-    .artist-actions {
-        display: flex;
-        gap: var(--spacing-md);
-    }
-
-    .play-all-btn {
-        font-size: var(--font-size-md);
-        padding: var(--spacing-sm) var(--spacing-xl);
-    }
-
-    .tabs {
-        display: flex;
-        gap: var(--spacing-md);
-        padding: 0 var(--spacing-md);
-        border-bottom: 1px solid var(--border-color);
-    }
-
-    .tab {
-        padding: var(--spacing-md);
-        font-size: var(--font-size-base);
-        font-weight: var(--font-weight-semibold);
-        color: var(--text-secondary);
-        border-bottom: 2px solid transparent;
-        margin-bottom: -1px;
-        transition: all var(--transition-fast);
-    }
-
-    .tab:hover {
-        color: var(--text-primary);
-    }
-
-    .tab.active {
-        color: var(--text-primary);
-        border-bottom-color: var(--accent-primary);
-    }
-
-    .artist-content {
-        flex: 1;
-        overflow-y: auto;
-    }
-
-    .btn-secondary {
-        background-color: transparent;
-        border: 1px solid var(--border-color);
-        color: var(--text-primary);
-        font-weight: var(--font-weight-semibold);
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        gap: var(--spacing-sm);
-        transition: all var(--transition-fast);
-        padding: var(--spacing-sm) var(--spacing-xl);
-        border-radius: var(--radius-full);
-        font-size: var(--font-size-md);
-    }
-
-    .btn-secondary:hover:not(:disabled) {
-        border-color: var(--text-primary);
-        transform: scale(1.05);
-    }
-
-    .btn-secondary:disabled {
-        opacity: 0.7;
-        cursor: not-allowed;
-    }
-
-    .spinner-sm {
-        width: 16px;
-        height: 16px;
-        border: 2px solid var(--bg-highlight);
-        border-top-color: var(--text-primary);
-        border-radius: 50%;
-        animation: spin 1s linear infinite;
-    }
-
-    /* ── About / MusicBrainz panel ── */
-    .about-panel {
-        padding: var(--spacing-lg);
-        display: flex;
-        flex-direction: column;
-        gap: var(--spacing-lg);
-    }
-
-    .about-loading {
-        display: flex;
-        align-items: center;
-        gap: var(--spacing-md);
-        color: var(--text-secondary);
-        padding: var(--spacing-xl) 0;
     }
 
     .about-error {
@@ -812,7 +526,7 @@
     }
 
     .about-heading {
-        font-size: 0.7rem;
+        font-size: 0.75rem;
         font-weight: var(--font-weight-bold);
         text-transform: uppercase;
         letter-spacing: 2px;
@@ -954,13 +668,6 @@
         gap: var(--spacing-sm);
     }
 
-    .disco-cover-wrap {
-        width: 100%;
-        aspect-ratio: 1;
-        overflow: hidden;
-        background: var(--bg-surface);
-    }
-
     .disco-cover {
         width: 100%;
         height: 100%;
@@ -1009,65 +716,5 @@
     .disco-cover-placeholder.rt-other {
         color: #6b7280;
         background: rgba(107, 114, 128, 0.08);
-    }
-
-    /* ── Mobile ── */
-    :global(html.layout-mobile) .artist-header {
-        flex-direction: column;
-        align-items: center;
-        text-align: center;
-        padding: var(--spacing-md)
-            var(--spacing-md) var(--spacing-md);
-        gap: var(--spacing-md);
-    }
-
-    :global(html.layout-mobile) .back-btn {
-        top: var(--spacing-sm);
-        left: var(--spacing-sm);
-    }
-
-    :global(html.layout-mobile) .artist-avatar {
-        width: 120px;
-        height: 120px;
-    }
-
-    :global(html.layout-mobile) .artist-initial {
-        font-size: 2.5rem;
-    }
-
-    :global(html.layout-mobile) .artist-info {
-        align-items: center;
-    }
-
-    :global(html.layout-mobile) .artist-name {
-        font-size: 1.5rem;
-        word-break: break-word;
-    }
-
-    :global(html.layout-mobile) .artist-meta {
-        flex-wrap: wrap;
-        margin-bottom: var(--spacing-md);
-    }
-
-    :global(html.layout-mobile) .artist-actions {
-        flex-wrap: wrap;
-        justify-content: center;
-    }
-
-    :global(html.layout-mobile) .play-all-btn,
-    :global(html.layout-mobile) .btn-secondary {
-        padding: var(--spacing-sm) var(--spacing-lg);
-        font-size: var(--font-size-base);
-        min-height: 44px;
-    }
-
-    :global(html.layout-mobile) .tabs {
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
-    }
-
-    :global(html.layout-mobile) .tab {
-        min-height: 44px;
-        white-space: nowrap;
     }
 </style>

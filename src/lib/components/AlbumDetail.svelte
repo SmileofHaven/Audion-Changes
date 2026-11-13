@@ -4,18 +4,14 @@
     import {
         getAlbum,
         getTracksByAlbum,
-        getAlbumArtSrc,
-        getAlbumCoverSrc,
-        getTrackCoverSrc,
         formatDuration,
         getReleaseMbInfo,
         type MbReleaseInfo,
     } from "$lib/api/tauri";
-    import { playTracks, currentTrack, isPlaying } from "$lib/stores/player";
+    import { playTracks, currentAlbumId, isPlaying } from "$lib/stores/player";
     import { goToAlbums, goToArtistDetail } from "$lib/stores/view";
     import ArtistLinks from "$lib/components/ArtistLinks.svelte";
     import { getAlbumCoverFromTracks } from "$lib/stores/library";
-    import TrackList from "./track-list/TrackList.svelte";
     import {
         downloadTracks,
         hasDownloadableTracks,
@@ -24,15 +20,17 @@
         type DownloadProgress,
     } from "$lib/services/downloadService";
     import { addToast } from "$lib/stores/toast";
-    import { goto } from "$app/navigation";
-    import { _, locale } from "svelte-i18n";
+    import { _ } from "svelte-i18n";
     import Icon from "$lib/components/Icon.svelte";
+    import DetailView from "./DetailView.svelte";
+    import { contextMenu } from "$lib/stores/ui";
+    import { buildAlbumContextMenu } from "$lib/menus/contextMenus";
+    import { pluginStore } from "$lib/stores/plugin-store";
 
     export let albumId: number;
 
     let album: Album | null = null;
     let tracks: Track[] = [];
-    let groupedTracks: { disc: number; tracks: Track[] }[] = [];
     let loading = true;
 
     // MusicBrainz release info
@@ -40,22 +38,6 @@
     let mbReleaseLoading = false;
 
     $: totalDuration = tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
-
-    function groupTracksByDisc(tracks: Track[]) {
-        const groups = new Map<number, Track[]>();
-
-        tracks.forEach((track) => {
-            const disc = track.disc_number || 1;
-            if (!groups.has(disc)) {
-                groups.set(disc, []);
-            }
-            groups.get(disc)?.push(track);
-        });
-
-        return Array.from(groups.entries())
-            .sort((a, b) => a[0] - b[0])
-            .map(([disc, tracks]) => ({ disc, tracks }));
-    }
 
     async function loadAlbumData() {
         loading = true;
@@ -73,7 +55,6 @@
                 if (discA !== discB) return discA - discB;
                 return (a.track_number || 0) - (b.track_number || 0);
             });
-            groupedTracks = groupTracksByDisc(tracks);
             // Background MB fetch — don't await so it doesn't block the UI
             if (album) fetchMbRelease(album.name, album.artist || "");
         } catch (error) {
@@ -99,26 +80,19 @@
     let isDownloading = false;
     let downloadProgress = "";
 
-    // Check if we have downloadable tracks that are NOT yet downloaded
     $: downloadableTracks = tracks.filter((t) => {
-        // Must be downloadable (streaming source) AND not have a local_src yet
         return hasDownloadableTracks([t]) && !t.local_src;
     });
 
     $: hasDownloadable = downloadableTracks.length > 0;
 
-    // Check if everything that CAN be downloaded IS downloaded
     $: allDownloaded =
         tracks.length > 0 &&
         tracks.every((t) => {
-            // If it's local, it's downloaded.
             if (!t.source_type || t.source_type === "local") return true;
-            // If it's streaming, it must have local_src
             return !!t.local_src;
         });
 
-    // Check if Tidal plugin is available (for hiding empty albums)
-    import { pluginStore } from "$lib/stores/plugin-store";
     $: isTidalAvailable = $pluginStore.installed.some(
         (p) => p.name === "Tidal Search" && p.enabled,
     );
@@ -136,11 +110,7 @@
         if (isDownloading) return;
 
         if (needsDownloadLocation()) {
-            addToast(
-                $_("playlist.configureDownloadLocation"),
-                "error",
-            );
-            // Optionally redirect to settings
+            addToast($_("playlist.configureDownloadLocation"), "error");
             return;
         }
 
@@ -155,9 +125,7 @@
                     const total = progress.total;
 
                     if (progress.bytesTotal) {
-                        const currentMB = formatBytes(
-                            progress.bytesCurrent || 0,
-                        );
+                        const currentMB = formatBytes(progress.bytesCurrent || 0);
                         const totalMB = formatBytes(progress.bytesTotal);
                         downloadProgress = `${current}/${total} (${currentMB}/${totalMB})`;
                     } else {
@@ -169,10 +137,7 @@
             showDownloadResult(result);
         } catch (error) {
             console.error("Download failed:", error);
-            addToast(
-                $_("playlist.downloadFailed"),
-                "error",
-            );
+            addToast($_("playlist.downloadFailed"), "error");
         } finally {
             isDownloading = false;
             downloadProgress = "";
@@ -188,16 +153,6 @@
             });
         }
     }
-
-    onMount(() => {
-        loadAlbumData();
-    });
-
-    // Reload when albumId changes
-    $: albumId, loadAlbumData();
-
-    import { contextMenu } from "$lib/stores/ui";
-    import { buildAlbumContextMenu } from "$lib/menus/contextMenus";
 
     function handleContextMenu(e: MouseEvent) {
         if (!album) return;
@@ -217,109 +172,76 @@
             }),
         });
     }
+
+    onMount(() => {
+        loadAlbumData();
+    });
+
+    $: albumId, loadAlbumData();
 </script>
 
-<div class="album-detail">
-    {#if loading}
-        <div class="loading">
-            <div class="spinner"></div>
-            <span>{$_("album.loading")}</span>
-        </div>
-    {:else if album && shouldShowAlbum}
-        <header
-            class="album-header"
-            on:contextmenu={handleContextMenu}
-            aria-label="Album Header"
-        >
-            <button
-                class="back-btn"
-                on:click={goToAlbums}
-                aria-label="Back to Albums"
-            >
-                <Icon name="arrow-left" size={24} />
-            </button>
-            <div class="album-cover">
-                {#if getAlbumCoverFromTracks(album.id)}
-                    <img
-                        src={getAlbumCoverFromTracks(album.id)}
-                        alt={album.name}
-                        decoding="async"
-                    />
-                {:else}
-                    <div class="album-cover-placeholder">
-                        <Icon name="disc" size={64} />
-                    </div>
-                {/if}
-            </div>
-            <div class="album-info">
-                <span class="album-type">{$_("album.type")}</span>
-                <h1 class="album-title">{album.name}</h1>
-                <div class="album-meta">
-                    <ArtistLinks
-                        artist={album.artist || $_("common.unknownArtist")}
-                        artists={album.artists}
-                        chipClass="album-artist link"
-                        wrapClass="album-artist-links"
-                        chipTitle={$_("contextMenu.goToArtist")}
-                        on:select={(e) => goToArtistDetail(e.detail)}
-                    />
-                    <span class="separator">•</span>
-                    <span
-                        >{$_("album.songs", {
-                            values: { count: tracks.length },
-                        })}</span
-                    >
-                    <span class="separator">•</span>
-                    <span>{formatDuration(totalDuration)}</span>
-                </div>
-                <div class="album-actions">
-                    <button
-                        class="btn-primary play-all-btn"
-                        on:click={handlePlayAll}
-                    >
-                        <Icon name="play" size={24} />
-                        {$_("album.play")}
-                    </button>
+<DetailView
+    {loading}
+    notFound={!loading && (!album || !shouldShowAlbum)}
+    notFoundTitle={$_("album.notFound")}
+    notFoundActionLabel={$_("album.backToAlbums")}
+    onNotFoundAction={goToAlbums}
+    title={album?.name ?? ""}
+    type={$_("album.type")}
+    typeIcon="disc"
+    coverSrc={album ? getAlbumCoverFromTracks(album.id) : null}
+    coverAlt={album?.name ?? ""}
+    coverShape="square"
+    coverPlaceholderIcon="disc"
+    onBack={goToAlbums}
+    backAriaLabel="Back to Albums"
+    onHeaderContextMenu={handleContextMenu}
+    stats={[
+        $_("album.songs", { values: { count: tracks.length } }),
+        formatDuration(totalDuration),
+    ]}
+    onPlayAll={handlePlayAll}
+    playAllDisabled={tracks.length === 0}
+    isPlayingThis={$currentAlbumId === albumId && $isPlaying}
+    {hasDownloadable}
+    {allDownloaded}
+    {isDownloading}
+    {downloadProgress}
+    onDownloadAll={handleDownloadAll}
+    {tracks}
+    showAlbum={false}
+    groupDiscs={true}
+    playbackContext={{
+        type: "album",
+        albumId,
+        displayName: album?.name,
+    }}
+>
+    <!-- Subtitle: Artist links -->
+    <svelte:fragment slot="subtitle">
+        {#if album}
+            <ArtistLinks
+                artist={album.artist || $_("common.unknownArtist")}
+                artists={album.artists}
+                chipClass="album-artist link"
+                wrapClass="album-artist-links"
+                chipTitle={$_("contextMenu.goToArtist")}
+                on:select={(e) => goToArtistDetail(e.detail)}
+            />
+        {/if}
+    </svelte:fragment>
 
-                    {#if hasDownloadable}
-                        <button
-                            class="btn-secondary download-btn"
-                            on:click={handleDownloadAll}
-                            disabled={isDownloading ||
-                                (!hasDownloadable && !allDownloaded) ||
-                                allDownloaded}
-                            class:downloaded={allDownloaded}
-                        >
-                            {#if isDownloading}
-                                <div class="spinner-sm"></div>
-                                <span>{downloadProgress}</span>
-                            {:else if allDownloaded}
-                                <Icon name="download" size={24} />
-                                <span>{$_("album.downloaded")}</span>
-                            {:else}
-                                <Icon name="download" size={24} />
-                                <span>{$_("album.download")}</span>
-                            {/if}
-                        </button>
-                    {/if}
-                </div>
-            </div>
-        </header>
-
-        <!-- MusicBrainz release info bar -->
+    <!-- Info Bar: MusicBrainz release info -->
+    <svelte:fragment slot="info-bar">
         {#if mbReleaseLoading}
             <div class="mb-info-bar mb-info-loading">
                 <span class="mb-info-spinner"></span>
-                <span class="mb-info-hint"
-                    >{$_("album.fetchingReleaseInfo")}</span
-                >
+                <span class="mb-info-hint">{$_("album.fetchingReleaseInfo")}</span>
             </div>
         {:else if mbRelease && (mbRelease.year || mbRelease.label || mbRelease.country || mbRelease.release_type)}
             <div class="mb-info-bar">
                 {#if mbRelease.release_type}
-                    <span class="mb-chip type-chip"
-                        >{mbRelease.release_type}</span
-                    >
+                    <span class="mb-chip type-chip">{mbRelease.release_type}</span>
                 {/if}
                 {#if mbRelease.year}
                     <span class="mb-chip">{mbRelease.year}</span>
@@ -333,189 +255,14 @@
                 {#if mbRelease.country}
                     <span class="mb-chip">{mbRelease.country}</span>
                 {/if}
-                <span class="mb-source-label">{$_("album.viaMusicBrainz")}</span
-                >
+                <span class="mb-source-label">{$_("album.viaMusicBrainz")}</span>
             </div>
         {/if}
-
-        <section class="track-list-section">
-            {#if groupedTracks.length > 1}
-                {#each groupedTracks as group}
-                    <div class="disc-group">
-                        <div class="disc-header">
-                            <span class="disc-icon">
-                                <Icon name="disc" size={16} />
-                            </span>
-                            <h3>
-                                {$_("album.disc", {
-                                    values: { number: group.disc },
-                                })}
-                            </h3>
-                        </div>
-                        <TrackList
-                            tracks={group.tracks}
-                            showAlbum={false}
-                            playbackContext={{
-                                type: "album",
-                                albumId,
-                                displayName: album?.name,
-                            }}
-                            queueTracks={tracks}
-                        />
-                    </div>
-                {/each}
-            {:else}
-                <TrackList
-                    {tracks}
-                    showAlbum={false}
-                    playbackContext={{
-                        type: "album",
-                        albumId,
-                        displayName: album?.name,
-                    }}
-                    queueTracks={tracks}
-                />
-            {/if}
-        </section>
-    {:else}
-        <div class="not-found">
-            <h2>{$_("album.notFound")}</h2>
-            <button class="btn-secondary" on:click={goToAlbums}>
-                {$_("album.backToAlbums")}
-            </button>
-        </div>
-    {/if}
-</div>
+    </svelte:fragment>
+</DetailView>
 
 <style>
-    .album-detail {
-        display: flex;
-        flex-direction: column;
-        height: 100%;
-    }
-
-    .loading,
-    .not-found {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        height: 100%;
-        gap: var(--spacing-md);
-        color: var(--text-secondary);
-    }
-
-    .spinner {
-        width: 32px;
-        height: 32px;
-        border: 3px solid var(--bg-highlight);
-        border-top-color: var(--accent-primary);
-        border-radius: 50%;
-        animation: spin 1s linear infinite;
-    }
-
-    @keyframes spin {
-        to {
-            transform: rotate(360deg);
-        }
-    }
-
-    .album-header {
-        display: flex;
-        gap: var(--spacing-lg);
-        padding: var(--spacing-lg);
-        background: linear-gradient(
-            180deg,
-            var(--bg-surface) 0%,
-            var(--bg-base) 100%
-        );
-    }
-
-    .back-btn {
-        position: absolute;
-        top: var(--spacing-md);
-        left: var(--spacing-md);
-        width: 32px;
-        height: 32px;
-        border-radius: var(--radius-full);
-        background-color: rgba(0, 0, 0, 0.5);
-        color: var(--text-primary);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: all var(--transition-fast);
-    }
-
-    .back-btn:hover {
-        background-color: rgba(0, 0, 0, 0.7);
-        transform: scale(1.1);
-    }
-
-    .album-cover {
-        width: 232px;
-        height: 232px;
-        border-radius: var(--radius-sm);
-        overflow: hidden;
-        flex-shrink: 0;
-        box-shadow: var(--shadow-lg);
-    }
-
-    .album-cover img {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-    }
-
-    .album-cover-placeholder {
-        width: 100%;
-        height: 100%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: linear-gradient(
-            135deg,
-            var(--bg-surface) 0%,
-            var(--bg-highlight) 100%
-        );
-        color: var(--text-subdued);
-    }
-
-    .album-info {
-        display: flex;
-        flex-direction: column;
-        justify-content: flex-end;
-        align-items: flex-start;
-        min-width: 0;
-        flex: 1;
-    }
-
-    .album-type {
-        font-size: var(--font-size-xs);
-        font-weight: var(--font-weight-semibold);
-        text-transform: uppercase;
-        color: var(--text-primary);
-    }
-
-    .album-title {
-        font-size: 3rem;
-        font-weight: var(--font-weight-bold);
-        line-height: 1.1;
-        margin: var(--spacing-sm) 0;
-        color: var(--text-primary);
-    }
-
-    .album-meta {
-        display: flex;
-        flex-direction: row;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: var(--spacing-sm);
-        font-size: var(--font-size-base);
-        color: var(--text-secondary);
-        margin-bottom: var(--spacing-lg);
-    }
-
-    .album-artist {
+    :global(.album-artist.link) {
         font-weight: var(--font-weight-semibold);
         color: var(--text-primary);
         background: none;
@@ -524,112 +271,8 @@
         cursor: pointer;
     }
 
-    .album-artist:hover {
+    :global(.album-artist.link:hover) {
         text-decoration: underline;
-    }
-
-    .separator {
-        color: var(--text-subdued);
-    }
-
-    .album-actions {
-        display: flex;
-        gap: var(--spacing-md);
-    }
-
-    .play-all-btn {
-        font-size: var(--font-size-md);
-        padding: var(--spacing-sm) var(--spacing-xl);
-    }
-
-    .track-list-section {
-        flex: 1;
-        overflow-y: auto;
-        min-height: 0;
-    }
-
-    .btn-secondary {
-        background-color: transparent;
-        border: 1px solid var(--border-color);
-        color: var(--text-primary);
-        font-weight: var(--font-weight-semibold);
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        gap: var(--spacing-sm);
-        transition: all var(--transition-fast);
-        padding: var(--spacing-sm) var(--spacing-xl);
-        border-radius: var(--radius-full);
-        font-size: var(--font-size-md);
-    }
-
-    .btn-secondary:hover:not(:disabled) {
-        border-color: var(--text-primary);
-        transform: scale(1.05);
-    }
-
-    .btn-secondary.downloaded {
-        border-color: var(--accent-primary);
-        color: var(--accent-primary);
-        cursor: default;
-    }
-
-    .btn-secondary.downloaded:hover {
-        transform: none;
-    }
-
-    .btn-secondary:disabled {
-        opacity: 0.7;
-        cursor: not-allowed;
-    }
-
-    .spinner-sm {
-        width: 16px;
-        height: 16px;
-        border: 2px solid var(--bg-highlight);
-        border-top-color: var(--text-primary);
-        border-radius: 50%;
-        animation: spin 1s linear infinite;
-    }
-
-    .disc-group {
-        margin-bottom: var(--spacing-lg);
-    }
-
-    .disc-header {
-        display: flex;
-        align-items: center;
-        gap: var(--spacing-md);
-        padding: var(--spacing-md) var(--spacing-xl);
-        background: transparent;
-        color: var(--text-primary);
-        font-size: var(--font-size-md);
-        font-weight: var(--font-weight-semibold);
-        text-transform: none;
-        letter-spacing: normal;
-        border: none;
-        margin-top: var(--spacing-lg);
-        margin-bottom: var(--spacing-xs);
-    }
-
-    .disc-icon {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: var(--text-secondary);
-        width: 24px; /* Align with track number width roughly */
-    }
-
-    .disc-icon {
-        display: flex;
-        align-items: center;
-        opacity: 0.7;
-    }
-
-    .disc-header h3 {
-        margin: 0;
-        font-size: inherit;
-        font-weight: inherit;
     }
 
     /* ── MusicBrainz info bar ── */
@@ -637,24 +280,29 @@
         display: flex;
         align-items: center;
         flex-wrap: wrap;
-        gap: var(--spacing-sm);
-        padding: var(--spacing-sm) var(--spacing-lg);
-        border-bottom: 1px solid var(--border-color);
-        min-height: 38px;
+        gap: var(--spacing-xs);
+        padding-top: var(--spacing-xs);
     }
 
     .mb-info-loading {
-        opacity: 0.5;
+        opacity: 0.6;
     }
 
     .mb-info-spinner {
-        width: 14px;
-        height: 14px;
-        border: 2px solid rgba(255, 255, 255, 0.15);
+        width: 12px;
+        height: 12px;
+        border: 2px solid var(--border-color);
         border-top-color: var(--accent-primary);
         border-radius: 50%;
-        animation: spin 1s linear infinite;
-        flex-shrink: 0;
+        animation: spin 0.8s linear infinite;
+        display: inline-block;
+        margin-right: 6px;
+    }
+
+    @keyframes spin {
+        to {
+            transform: rotate(360deg);
+        }
     }
 
     .mb-info-hint {
@@ -665,75 +313,23 @@
     .mb-chip {
         display: inline-flex;
         align-items: center;
-        gap: var(--spacing-xs);
-        background: rgba(255, 255, 255, 0.06);
-        border: 1px solid rgba(255, 255, 255, 0.1);
+        gap: 4px;
+        padding: 2px 8px;
         border-radius: var(--radius-full);
-        padding: var(--spacing-xs) 10px;
-        font-size: var(--font-size-xs);
-        font-weight: var(--font-weight-semibold);
+        background: rgba(255, 255, 255, 0.08);
         color: var(--text-secondary);
-        white-space: nowrap;
+        font-size: var(--font-size-xs);
+        font-weight: var(--font-weight-medium);
     }
 
-    .type-chip {
-        background: rgba(var(--accent-primary-rgb, 30 215 96) / 0.1);
-        border-color: rgba(var(--accent-primary-rgb, 30 215 96) / 0.3);
+    .mb-chip.type-chip {
+        background: rgba(29, 185, 84, 0.15);
         color: var(--accent-primary);
     }
 
     .mb-source-label {
-        font-size: 0.65rem;
-        color: var(--text-subdued);
-        opacity: 0.45;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        margin-left: auto;
-    }
-
-    /* ── Mobile ── */
-    :global(html.layout-mobile) .album-header {
-        flex-direction: column;
-        align-items: center;
-        text-align: center;
-        padding: var(--spacing-md)
-            var(--spacing-md) var(--spacing-md);
-        gap: var(--spacing-md);
-    }
-
-    :global(html.layout-mobile) .back-btn {
-        top: var(--spacing-sm);
-        left: var(--spacing-sm);
-    }
-
-    :global(html.layout-mobile) .album-cover {
-        width: 160px;
-        height: 160px;
-    }
-
-    :global(html.layout-mobile) .album-info {
-        align-items: center;
-    }
-
-    :global(html.layout-mobile) .album-title {
-        font-size: 1.5rem;
-        word-break: break-word;
-    }
-
-    :global(html.layout-mobile) .album-meta {
-        flex-wrap: wrap;
-        margin-bottom: var(--spacing-md);
-    }
-
-    :global(html.layout-mobile) .album-actions {
-        flex-wrap: wrap;
-        justify-content: center;
-    }
-
-    :global(html.layout-mobile) .play-all-btn,
-    :global(html.layout-mobile) .btn-secondary {
-        padding: var(--spacing-sm) var(--spacing-lg);
-        font-size: var(--font-size-base);
-        min-height: 44px;
+        font-size: 0.7rem;
+        color: var(--text-tertiary);
+        margin-left: var(--spacing-xs);
     }
 </style>
