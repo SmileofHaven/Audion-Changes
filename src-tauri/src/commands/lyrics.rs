@@ -873,7 +873,15 @@ fn sylt_to_lrc(entries: &[(u32, String)]) -> String {
 ///
 /// Returns None if no tag or no lyrics field is found at all.
 #[tauri::command]
-pub fn get_embedded_lyrics(music_path: String) -> Result<Option<EmbeddedLyricsResult>, String> {
+pub async fn get_embedded_lyrics(music_path: String) -> Result<Option<EmbeddedLyricsResult>, String> {
+    // a plain fn command runs on the main thread inside the webview's IPC callback
+    // parsing tags reads the file from disk (possibly a slow or busy HDD)
+    tauri::async_runtime::spawn_blocking(move || get_embedded_lyrics_blocking(music_path))
+        .await
+        .map_err(|e| format!("embedded lyrics task failed: {}", e))?
+}
+
+fn get_embedded_lyrics_blocking(music_path: String) -> Result<Option<EmbeddedLyricsResult>, String> {
     use lofty::config::ParseOptions;
     use lofty::file::AudioFile;
     use lofty::id3::v2::{Frame, FrameFlags, SynchronizedTextFrame, TimestampFormat};
@@ -904,8 +912,12 @@ pub fn get_embedded_lyrics(music_path: String) -> Result<Option<EmbeddedLyricsRe
             .map(|e| e.eq_ignore_ascii_case("wav"))
             .unwrap_or(false);
 
-        if !is_wav {
-            let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+        // only real MPEG files go down this path
+        // a FLAC/AIFF/etc. with a prepended ID3v2 tag has no MPEG frames, so those files are handled by the generic lofty path below
+        if !is_wav && tagged.file_type() == lofty::file::FileType::Mpeg {
+            let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+            // lofty's frame-sync search reads one byte at a time, on a raw File that is one syscall per byte
+            let mut file = std::io::BufReader::new(file);
             if let Ok(mpeg) = MpegFile::read_from(&mut file, ParseOptions::new()) {
                 // Compute these once for MPEG-frame SYLT conversion
                 let properties = mpeg.properties();
